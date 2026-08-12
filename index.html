@@ -437,14 +437,32 @@ canvas{display:block;width:100%;background:var(--field);border:1px solid var(--r
       <div class="btnbar">
         <button class="primary" id="btnDetect">Detectar</button>
         <button id="btnClearMk">Limpar marcadores</button>
+        <button class="sm" id="btnUndoMk">Desfazer último</button>
         <div class="inline" style="margin-left:8px"><input type="checkbox" id="manualMode"><label for="manualMode">Edição manual no traçado</label></div>
+        <div class="inline"><input type="checkbox" id="snapOnset"><label for="snapOnset"><abbr title="Ajusta o clique ao início do burst mais próximo (±50 ms): retrocede do pico local do envelope até 10% da excursão acima da linha de base, com a mesma compensação de envelope do detector automático. Desligado, o marcador fica exatamente onde você clicou.">ímã de onset</abbr></label></div>
         <span class="note" id="detMsg"></span>
       </div>
       <div class="note" id="detTip" style="margin-top:8px"></div>
+      <div class="verdict hidden" id="manualHelp" style="margin-top:10px">
+        <b>Como marcar o início dos bursts com precisão:</b>
+        <ol style="margin:6px 0 4px 18px;padding:0;line-height:1.7">
+          <li><b>Amplie</b> com a rolagem do mouse até o burst ocupar boa parte da tela. A resolução do clique aparece
+            ao lado do intervalo de tempo (ex.: <code>0.9 ms/px</code>) — para latências corticais, busque ≤ 1 ms/px.</li>
+          <li>Posicione a <b>linha-guia tracejada</b> (que segue o cursor, com o tempo exato) sobre a <b>primeira deflexão
+            do EMG que sai da linha de base silenciosa</b> — o início do burst, nunca o pico — e <b>clique</b>.
+            Arrastar com o botão pressionado desloca o traçado sem marcar.</li>
+          <li><b>Ajuste fino:</b> as teclas <b>← / →</b> movem o último marcador em 1 ms (com <b>Shift</b>, 10 ms).
+            <b>Clique direito</b> (ou Alt+clique) remove o marcador mais próximo; <b>Desfazer último</b> remove o recém-colocado.</li>
+          <li>Opcional: o <b>ímã de onset</b> ajusta cada clique ao início detectado do burst mais próximo (±50 ms) —
+            útil para ganhar velocidade mantendo o critério objetivo; desligue para controle totalmente manual.</li>
+        </ol>
+        Para análise 100% manual escolha o algoritmo <b>Somente manual</b>; a edição também corrige marcadores dos
+        detectores automáticos. Marcadores editados invalidam médias já calculadas — recalcule na aba 4.
+      </div>
     </div>
   </div>
 
-  <div class="panel"><h2>Traçado <span class="hint">Rolagem = zoom · arrastar = deslocar · na edição manual, clique adiciona e Alt+clique remove.</span></h2>
+  <div class="panel"><h2>Traçado <span class="hint">Rolagem = zoom · arrastar = deslocar · na edição manual o clique marca exatamente na linha-guia, clique direito remove e ←/→ ajustam o último marcador.</span></h2>
     <div class="body"><div id="viewerHostDet"></div></div></div>
 
   <div class="panel"><h2>Latências entre músculos <span class="hint">Em relação ao canal âncora, sobre a média retificada.</span></h2>
@@ -1430,7 +1448,9 @@ function applyFilters(){
    ========================================================================== */
 const VIEW = {
   cv:null, ctx:null, t0:0, dur:10, drag:null, host:null,
+  gutter:62, hoverX:null, lastMk:null, _raf:0,
   userGain:false, pendingGains:null,
+  scheduleDraw(){ if (this._raf) return; this._raf=requestAnimationFrame(()=>{ this._raf=0; this.draw(); }); },
   /* ganhos sugeridos pela amplitude do registro; não sobrescreve ajuste manual */
   setGains(gE,gM){
     this.pendingGains=[gE,gM];
@@ -1472,36 +1492,110 @@ const VIEW = {
       this.t0 = Math.max(0, Math.min(DATA.n/DATA.fs-this.dur, tAt-frac*this.dur));
       this.draw();
     }, {passive:false});
+    /* No modo manual o arrastar continua deslocando o traçado; só o clique
+       sem arrasto (deslocamento < 4 px) adiciona/remove marcador. */
     this.cv.addEventListener('pointerdown', e=>{
-      if ($('#manualMode') && $('#manualMode').checked){ this.manualClick(e); return; }
-      this.drag={x:e.clientX, t0:this.t0}; this.cv.setPointerCapture(e.pointerId);
+      if (e.button!==0) return;                        // só botão esquerdo
+      this.drag={x:e.clientX, t0:this.t0, moved:false};
+      this.cv.setPointerCapture(e.pointerId);
     });
     this.cv.addEventListener('pointermove', e=>{
-      if (!this.drag) return;
       const r=this.cv.getBoundingClientRect();
-      const dt=(e.clientX-this.drag.x)/r.width*this.dur;
-      this.t0=Math.max(0,Math.min(DATA.n/DATA.fs-this.dur, this.drag.t0-dt));
-      this.draw();
+      if (this.drag){
+        if (Math.abs(e.clientX-this.drag.x)>3) this.drag.moved=true;
+        if (this.drag.moved){
+          const dt=(e.clientX-this.drag.x)/(r.width-this.gutter)*this.dur;
+          this.t0=Math.max(0,Math.min(DATA.n/DATA.fs-this.dur, this.drag.t0-dt));
+          this.draw();
+          return;
+        }
+      }
+      if ($('#manualMode') && $('#manualMode').checked){
+        this.hoverX=e.clientX-r.left;
+        this.scheduleDraw();
+      }
     });
-    this.cv.addEventListener('pointerup', ()=>{ this.drag=null; });
+    this.cv.addEventListener('pointerup', e=>{
+      if (e.button!==0){ this.drag=null; return; }
+      const hadDown=!!this.drag, wasDrag=this.drag && this.drag.moved;
+      this.drag=null;
+      if (hadDown && !wasDrag && $('#manualMode') && $('#manualMode').checked) this.manualClick(e);
+    });
+    this.cv.addEventListener('pointerleave', ()=>{ if (this.hoverX!==null){ this.hoverX=null; this.scheduleDraw(); } });
+    this.cv.addEventListener('contextmenu', e=>{
+      if ($('#manualMode') && $('#manualMode').checked){ e.preventDefault(); this.drag=null; this.removeNearest(e.clientX); }
+    });
     window.addEventListener('resize', ()=>this.draw());
   },
+  /* Clique manual. O eixo temporal começa na calha de rótulos (gutter), não
+     na borda do canvas — sem descontá-la, todo marcador caía antes do ponto
+     clicado (era o bug de marcação imprecisa). */
   manualClick(e){
     const r=this.cv.getBoundingClientRect();
-    const t = this.t0 + (e.clientX-r.left)/r.width*this.dur;
-    const s = t*DATA.fs;
+    const px = e.clientX-r.left;
+    if (px < this.gutter) return;                      // área dos rótulos
+    const t = this.t0 + (px-this.gutter)/(r.width-this.gutter)*this.dur;
+    let s = t*DATA.fs;
     if (e.altKey){
-      let bi=-1, bd=Infinity;
-      MARKERS.forEach((m,i)=>{ const d=Math.abs(m-s); if(d<bd){bd=d;bi=i;} });
-      if (bi>=0 && bd < 0.02*DATA.fs*Math.max(1,this.dur)) MARKERS.splice(bi,1);
+      this.removeNearest(e.clientX);
+      return;
     } else {
-      const ai = +$('#anchorCh').value;
+      if ($('#snapOnset') && $('#snapOnset').checked) s=this.snapToOnset(s);
       MARKERS.push(s);
       MARKERS.sort((a,b)=>a-b);
+      this.lastMk=s;
+      PARAMS.detect = PARAMS.detect || {algo:'manual'};
+      PARAMS.detect.manualEdits = (PARAMS.detect.manualEdits||0)+1;
+      PARAMS.anchor = PARAMS.anchor || DATA.labels[+$('#anchorCh').value];
+      $('#detMsg').textContent=`Marcador em ${(s/DATA.fs).toFixed(4)} s · ${MARKERS.length} no total · ←/→ ajustam em 1 ms (Shift: 10 ms)`;
     }
+    EP=null; STATS=null; SPLIT=null; ERD=null;
     updateChips(); this.draw();
   },
-  reset(){ this.t0=0; this.dur=Math.min(10, DATA.n/DATA.fs); this.userGain=false; },
+  /* Remove o marcador mais próximo do cursor (até 12 px na tela). Usado
+     pelo clique direito e pelo Alt+clique. */
+  removeNearest(clientX){
+    const r=this.cv.getBoundingClientRect();
+    const px=clientX-r.left;
+    if (px<this.gutter) return;
+    const s=(this.t0+(px-this.gutter)/(r.width-this.gutter)*this.dur)*DATA.fs;
+    const tolS=12*this.dur*DATA.fs/(r.width-this.gutter);
+    let bi=-1, bd=Infinity;
+    MARKERS.forEach((m,i)=>{ const d=Math.abs(m-s); if(d<bd){bd=d;bi=i;} });
+    if (bi>=0 && bd<tolS){
+      if (MARKERS[bi]===this.lastMk) this.lastMk=null;
+      MARKERS.splice(bi,1);
+      EP=null; STATS=null; SPLIT=null; ERD=null;
+      $('#detMsg').textContent=`Marcador removido · ${MARKERS.length} restante(s)`;
+      updateChips(); this.draw();
+    }
+  },
+  /* Ímã de onset: leva o clique ao início do burst mais próximo (±50 ms) —
+     retrocesso do pico local do envelope até 10% da excursão acima da linha
+     de base, com interpolação sub-amostral e a mesma compensação de
+     envelope do detector automático. */
+  snapToOnset(s){
+    const ai=+$('#anchorCh').value, env=DATA.env[ai];
+    if (!env) return s;
+    const fs=DATA.fs, w=Math.round(0.05*fs);
+    const a=Math.max(1,Math.round(s)-w), b=Math.min(DATA.n-1,Math.round(s)+w);
+    let pk=0, pi=-1;
+    for (let k=a;k<=b;k++) if (env[k]>pk){ pk=env[k]; pi=k; }
+    if (pi<0 || pk<=0) return s;
+    const ba=Math.max(0,a-Math.round(0.15*fs));
+    let base=0,c=0; for (let k=ba;k<a;k++){ base+=env[k]; c++; }
+    base=c?base/c:0;
+    if (pk<=base) return s;
+    const th=base+0.1*(pk-base);
+    let z=pi; while (z>a && env[z]>th) z--;
+    let out=z;
+    if (z<pi && env[z+1]!==env[z]){
+      const f=(th-env[z])/(env[z+1]-env[z]);
+      out=z+Math.max(0,Math.min(1,f));
+    }
+    return out + envelopeLeadSamples();
+  },
+  reset(){ this.t0=0; this.dur=Math.min(10, DATA.n/DATA.fs); this.userGain=false; this.lastMk=null; this.hoverX=null; },
   mount(hostId){
     if (!this.wrap) this.init();
     const h=$(hostId); if (h && this.wrap.parentElement!==h){ h.appendChild(this.wrap); }
@@ -1516,7 +1610,8 @@ const VIEW = {
     const cs=getComputedStyle(document.body);
     const C = k=>cs.getPropertyValue(k).trim();
     ctx.clearRect(0,0,W,H);
-    const gutter=62, pad=8;
+    ctx.textAlign='left';
+    const gutter=this.gutter, pad=8;
     const nch=DATA.labels.length;
     const rowH=(H-2*pad)/nch;
     const s0=Math.max(0,Math.floor(this.t0*DATA.fs)), s1=Math.min(DATA.n,Math.ceil((this.t0+this.dur)*DATA.fs));
@@ -1524,7 +1619,9 @@ const VIEW = {
     const gE=+this.wrap.querySelector('#vGainE').value||100;
     const gM=+this.wrap.querySelector('#vGainM').value||300;
     const showRaw=this.wrap.querySelector('#vRaw').checked;
-    this.wrap.querySelector('#vRange').textContent = `${this.t0.toFixed(2)}–${(this.t0+this.dur).toFixed(2)} s`;
+    const manual = $('#manualMode') && $('#manualMode').checked;
+    this.wrap.querySelector('#vRange').textContent = `${this.t0.toFixed(2)}–${(this.t0+this.dur).toFixed(2)} s`
+      + (manual ? ` · ${(this.dur*1000/(W-gutter)).toFixed(1)} ms/px` : '');
 
     // grade temporal
     ctx.strokeStyle=C('--grid'); ctx.lineWidth=1;
@@ -1548,12 +1645,29 @@ const VIEW = {
       ctx.fillStyle=C('--ink-soft'); ctx.font='9px ui-monospace,monospace';
       ctx.fillText(isEMG?gM+'µV':gE+'µV', 6, yc+14);
     }
-    // marcadores
-    ctx.strokeStyle=C('--mark'); ctx.lineWidth=1;
+    // marcadores (alça triangular no topo; o último colocado em destaque)
+    ctx.strokeStyle=C('--mark'); ctx.fillStyle=C('--mark');
     for (const m of MARKERS){
       if (m<s0||m>s1) continue;
       const x=gutter+(m-s0)/(s1-s0)*(W-gutter);
-      ctx.globalAlpha=.75; ctx.beginPath(); ctx.moveTo(x,pad); ctx.lineTo(x,H-pad); ctx.stroke(); ctx.globalAlpha=1;
+      const isLast = m===this.lastMk;
+      ctx.globalAlpha=isLast?1:.7; ctx.lineWidth=isLast?1.6:1;
+      ctx.beginPath(); ctx.moveTo(x,pad); ctx.lineTo(x,H-pad); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x-4,pad); ctx.lineTo(x+4,pad); ctx.lineTo(x,pad+7); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha=1;
+    }
+    ctx.lineWidth=1;
+    // linha-guia do modo manual, com leitura do tempo sob o cursor
+    if (manual && this.hoverX!==null && this.hoverX>=gutter){
+      const t=this.t0+(this.hoverX-gutter)/(W-gutter)*this.dur;
+      ctx.strokeStyle=C('--ink-soft'); ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(this.hoverX,pad); ctx.lineTo(this.hoverX,H-pad); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle=C('--ink'); ctx.font='10px ui-monospace,monospace';
+      const right = this.hoverX>W-90;
+      ctx.textAlign = right?'right':'left';
+      ctx.fillText(t.toFixed(3)+' s', this.hoverX+(right?-5:5), pad+11);
+      ctx.textAlign='left';
     }
   }
 };
@@ -3109,6 +3223,7 @@ function renderReport(){
     ['Realinhamento por correlação', (PARAMS.detect&&PARAMS.detect.xcorr)?'sim':'não'],
     ['Canal âncora', PARAMS.anchor||'—'],
     ['Algoritmo de detecção', d.algo||'—'],
+    ...(d.manualEdits?[['Edições manuais de marcadores', d.manualEdits]]:[]),
     ['Filtro EEG', `${f.eegHP}–${f.eegLP} Hz, ordem ${f.eegOrd}, fase zero`],
     ['Filtro EMG', `${f.emgHP}–${f.emgLP} Hz, ordem ${f.emgOrd}, fase zero`],
     ['Notch', f.notch? `${f.notch} Hz até o ${f.harm}º harmônico` : 'desligado'],
@@ -3239,6 +3354,7 @@ function methodsText(){
   else if (d.algo==='tkeo') p.push(`O início de cada abalo foi marcado no canal de ${PARAMS.anchor} pelo operador de energia de Teager–Kaiser com limiar adaptativo (k=${d.k}; suavização de ${d.win} ms; período refratário de ${d.bd} s).`);
   else if (d.algo==='spla') p.push(`Foi realizada promediação travada no período silente (silent period locked averaging; Ugawa et al., 1989): durante contração tônica mantida de ${PARAMS.anchor}, períodos silentes foram definidos como queda do envelope abaixo de ${Math.round(d.frac*100)}% do nível tônico mediano, com duração entre ${d.minMs} e ${d.maxMs} ms e atividade tônica sustentada nos ${d.tonMs} ms precedentes; o gatilho foi o ${d.ref==='end'?'fim':'início'} do silêncio.`);
   else if (d.algo) p.push(`Os eventos foram marcados manualmente no traçado por inspeção visual.`);
+  if (d.manualEdits && d.algo!=='manual') p.push(`${d.manualEdits} marcador(es) foram adicionados ou corrigidos manualmente por inspeção visual.`);
   if (d.leadCompMs) p.push(`A latência introduzida pelo envelope de detecção foi compensada deterministicamente (${d.leadCompMs} ms).`);
   if (d.xcorr) p.push(`Os marcadores foram realinhados por correlação cruzada do EMG retificado contra o modelo médio.`);
   if (e.pre!==undefined){
@@ -3372,8 +3488,40 @@ $('#algo').onchange = e=>{
   $('#parTK').classList.toggle('hidden', e.target.value!=='tkeo');
   $('#parSPLA').classList.toggle('hidden', e.target.value!=='spla');
 };
-$('#btnDetect').onclick = runDetect;
-$('#btnClearMk').onclick = ()=>{ MARKERS=[]; SIL=null; EP=null; STATS=null; SPLIT=null; splitRuns=0; ERD=null; updateChips(); VIEW.draw(); $('#detMsg').textContent='Marcadores removidos.'; };
+$('#btnDetect').onclick = ()=>{ VIEW.lastMk=null; runDetect(); };
+$('#btnClearMk').onclick = ()=>{ MARKERS=[]; SIL=null; EP=null; STATS=null; SPLIT=null; splitRuns=0; ERD=null; VIEW.lastMk=null; updateChips(); VIEW.draw(); $('#detMsg').textContent='Marcadores removidos.'; };
+$('#btnUndoMk').onclick = ()=>{
+  if (!MARKERS.length) return;
+  let idx = VIEW.lastMk!==null ? MARKERS.indexOf(VIEW.lastMk) : -1;
+  if (idx<0) idx=MARKERS.length-1;
+  MARKERS.splice(idx,1);
+  VIEW.lastMk=null;
+  EP=null; STATS=null; SPLIT=null; ERD=null;
+  updateChips(); VIEW.draw();
+  $('#detMsg').textContent=`Marcador removido · ${MARKERS.length} restante(s)`;
+};
+$('#manualMode').onchange = e=>{
+  $('#manualHelp').classList.toggle('hidden', !e.target.checked);
+  if (!e.target.checked) VIEW.hoverX=null;
+  VIEW.draw();
+};
+/* ajuste fino do último marcador: ←/→ = 1 ms; Shift = 10 ms */
+window.addEventListener('keydown', e=>{
+  if (e.key!=='ArrowLeft' && e.key!=='ArrowRight') return;
+  if (!DATA.loaded || !$('#manualMode').checked || VIEW.lastMk===null) return;
+  const tag=(document.activeElement&&document.activeElement.tagName)||'';
+  if (/INPUT|SELECT|TEXTAREA/.test(tag)) return;
+  const idx=MARKERS.indexOf(VIEW.lastMk);
+  if (idx<0){ VIEW.lastMk=null; return; }
+  const d=(e.key==='ArrowLeft'?-1:1)*(e.shiftKey?10:1)*DATA.fs/1000;
+  MARKERS[idx]=Math.max(0,Math.min(DATA.n-1,MARKERS[idx]+d));
+  VIEW.lastMk=MARKERS[idx];
+  MARKERS.sort((a,b)=>a-b);
+  EP=null; STATS=null; SPLIT=null; ERD=null;
+  e.preventDefault();
+  $('#detMsg').textContent=`Marcador ajustado para ${(VIEW.lastMk/DATA.fs).toFixed(4)} s`;
+  VIEW.draw();
+});
 $$('[data-ep]').forEach(b=>b.onclick=()=>{
   const p=b.dataset.ep;
   if (p==='focal'){ $('#epPre').value=200; $('#epPost').value=100; $('#blA').value=-200; $('#blB').value=-120; $('#pkA').value=-100; $('#pkB').value=20; }
