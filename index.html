@@ -1260,6 +1260,18 @@ function stageColumns(cols, header, n, fs, units, opts){
   $('#panMap').scrollIntoView({behavior:'smooth', block:'nearest'});
 }
 function fmtFs(fs){ return Math.abs(fs-Math.round(fs))<0.01 ? String(Math.round(fs)) : fs.toFixed(2); }
+/* amplitude robusta (percentil de |x| em amostragem esparsa) e arredondamento 1-2-5 */
+function robustAmp(x, p){
+  const n=x.length, st=Math.max(1,Math.floor(n/20000)), s=[];
+  for (let i=0;i<n;i+=st) s.push(Math.abs(x[i]));
+  s.sort((a,b)=>a-b);
+  return DSP.percentile(s, p);
+}
+function nice125(v){
+  if (!(v>0)) return 1;
+  const p=Math.pow(10,Math.floor(Math.log10(v))), m=v/p;
+  return (m<=1?1:m<=2?2:m<=5?5:10)*p;
+}
 
 function acceptMapping(){
   const cols = PENDING.cols;
@@ -1392,6 +1404,17 @@ function applyFilters(){
     DATA.env[i] = DSP.normalize(DSP.rectify(e));
   });
 
+  /* Ganho automático do traçado conforme a amplitude real do registro.
+     Registros em unidades arbitrárias (ex.: TXT do BacAv, amplitudes ~0,01–1)
+     ficavam invisíveis com o fundo de escala padrão de 100/300 µV: a
+     deflexão era de fração de pixel. Não sobrescreve ajuste manual. */
+  let aE=0, aM=0;
+  DATA.proc.forEach((x,i)=>{
+    if (DATA.types[i]==='EMG') aM=Math.max(aM, robustAmp(x,0.999));
+    else if (DATA.types[i]==='EEG') aE=Math.max(aE, robustAmp(x,0.95));
+  });
+  VIEW.setGains(nice125((aE*2.5)||100), nice125((aM*1.5)||300));
+
   DATA.filtered = true;
   PARAMS.filters = { eegHP,eegLP,eegOrd,emgHP,emgLP,emgOrd,notch:nf,harm:nh,detrend:doDetr,reref:mode,envMode,envWin };
   $('#filtMsg').textContent = `Filtros aplicados em ${((performance.now()-t0)/1000).toFixed(2)} s. Fase zero verificada.` + (lapWarn?' '+lapWarn:'');
@@ -1407,6 +1430,15 @@ function applyFilters(){
    ========================================================================== */
 const VIEW = {
   cv:null, ctx:null, t0:0, dur:10, drag:null, host:null,
+  userGain:false, pendingGains:null,
+  /* ganhos sugeridos pela amplitude do registro; não sobrescreve ajuste manual */
+  setGains(gE,gM){
+    this.pendingGains=[gE,gM];
+    if (this.wrap && !this.userGain){
+      this.wrap.querySelector('#vGainE').value=gE;
+      this.wrap.querySelector('#vGainM').value=gM;
+    }
+  },
   init(){
     const wrap = document.createElement('div');
     wrap.id='viewerWrap';
@@ -1424,9 +1456,13 @@ const VIEW = {
     this.wrap = wrap;
     wrap.querySelector('#vZoomIn').onclick = ()=>{ this.dur=Math.max(0.2,this.dur/1.6); this.draw(); };
     wrap.querySelector('#vZoomOut').onclick= ()=>{ this.dur=Math.min(DATA.n/DATA.fs,this.dur*1.6); this.draw(); };
-    wrap.querySelector('#vGainE').oninput = ()=>this.draw();
-    wrap.querySelector('#vGainM').oninput = ()=>this.draw();
+    wrap.querySelector('#vGainE').oninput = ()=>{ this.userGain=true; this.draw(); };
+    wrap.querySelector('#vGainM').oninput = ()=>{ this.userGain=true; this.draw(); };
     wrap.querySelector('#vRaw').onchange  = ()=>this.draw();
+    if (this.pendingGains && !this.userGain){
+      wrap.querySelector('#vGainE').value=this.pendingGains[0];
+      wrap.querySelector('#vGainM').value=this.pendingGains[1];
+    }
 
     this.cv.addEventListener('wheel', e=>{
       e.preventDefault();
@@ -1465,7 +1501,7 @@ const VIEW = {
     }
     updateChips(); this.draw();
   },
-  reset(){ this.t0=0; this.dur=Math.min(10, DATA.n/DATA.fs); },
+  reset(){ this.t0=0; this.dur=Math.min(10, DATA.n/DATA.fs); this.userGain=false; },
   mount(hostId){
     if (!this.wrap) this.init();
     const h=$(hostId); if (h && this.wrap.parentElement!==h){ h.appendChild(this.wrap); }
@@ -3295,6 +3331,9 @@ $('#fileIn').onchange = async e=>{
     msg.textContent='Não foi possível ler o arquivo: '+err.message;
     console.error(err);
   }
+  /* permite re-selecionar o mesmo arquivo: sem isto o evento change não
+     dispara na segunda escolha e o carregamento parece "não fazer nada" */
+  e.target.value='';
   setTimeout(()=>{ prog.classList.remove('on'); bar.style.width='0%'; },400);
 };
 
