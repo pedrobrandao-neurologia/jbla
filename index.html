@@ -1,0 +1,2219 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JLBA — Jerk-Locked Back-Averaging</title>
+<!--
+  ============================================================================
+  JLBA v0.1 — Jerk-Locked Back-Averaging de EEG-poliEMG
+  Aplicação single-file, offline, sem dependências externas.
+  Todo o processamento ocorre no navegador; nenhum dado sai da máquina.
+
+  DECISÕES DE IMPLEMENTAÇÃO
+  --------------------------------------------------------------------------
+  1. FILTRAGEM DE FASE ZERO (não negociável). Butterworth em cascata de
+     biquads (bilinear/RBJ) aplicado forward-backward (filtfilt) com padding
+     por reflexão ímpar. Filtros causais deslocam a latência do pico, e a
+     latência é o desfecho diagnóstico do exame.
+  2. Passa-altas muito baixo (< fs/2000, ex.: 0,01 Hz a 1 kHz) sofre
+     cancelamento catastrófico na forma biquad. Nesses casos usa-se cascata
+     de seções de 1ª ordem (RC), numericamente estável em dupla precisão.
+  3. O marcador é sempre o ONSET do burst, nunca o pico. Após o cruzamento
+     do limiar há retrocesso até o último ponto abaixo do critério de linha
+     de base, com interpolação sub-amostral. Jitter de onset é a principal
+     fonte de borramento do transiente cortical.
+  4. Validação estatística é obrigatória, não opcional: reorder & split,
+     par/ímpar, bootstrap e surrogatos com gatilhos aleatórios.
+  5. Sem localStorage de dados de paciente. Sessão exportada em JSON contém
+     apenas parâmetros e marcadores.
+
+  REFERÊNCIAS METODOLÓGICAS
+  --------------------------------------------------------------------------
+  Shibasaki H, Kuroiwa Y. Electroencephalographic correlates of myoclonus.
+    Electroencephalogr Clin Neurophysiol 1975;39:455-63.
+  Shibasaki H, Hallett M. Electrophysiological studies of myoclonus.
+    Muscle Nerve 2005;31:157-74.
+  Barrett G. Jerk-locked averaging: technique and application.
+    J Clin Neurophysiol 1992;9:495-508.
+  Tassinari CA, Rubboli G, Shibasaki H. Neurophysiology of positive and
+    negative myoclonus. Electroencephalogr Clin Neurophysiol 1998;107:181-95.
+  Terada K, et al. Presence of Bereitschaftspotential preceding psychogenic
+    myoclonus. J Neurol Neurosurg Psychiatry 1995;58:745-7.
+  Vial F, Attaripour S, McGurrin P, Hallett M. BacAv, a new free online
+    platform for clinical back-averaging. Clin Neurophysiol Pract 2020;5:38-42.
+  Shibasaki H, Hallett M. What is the Bereitschaftspotential?
+    Clin Neurophysiol 2006;117:2341-56.
+  Latorre A, et al. Diagnostic utility of clinical neurophysiology in jerky
+    movement disorders. Mov Disord Clin Pract 2025;12:272-84.
+  Hodges PW, Bui BH. A comparison of computer-based methods for the
+    determination of onset of muscle contraction using electromyography.
+    Electroencephalogr Clin Neurophysiol 1996;101:511-9.
+  ============================================================================
+-->
+<style>
+:root{
+  --paper:#FAFAF8; --panel:#EDEFEC; --panel2:#E3E7E4;
+  --ink:#161C24; --ink-soft:#5A6672; --rule:#C8CFCA;
+  --grid:#D7DEE2; --grid-major:#BCC7CE;
+  --trace:#1E3A5F; --trace-2:#0E6E63; --trace-3:#8A5A00;
+  --mark:#B3121D; --ok:#1F6F43; --warn:#9A5B00;
+  --field:#FFFFFF;
+  --shadow:0 1px 0 rgba(22,28,36,.06);
+}
+[data-theme="bench"]{
+  --paper:#10151A; --panel:#171E25; --panel2:#1E262E;
+  --ink:#E4EBF1; --ink-soft:#8B99A6; --rule:#2B353F;
+  --grid:#1E2830; --grid-major:#2C3A45;
+  --trace:#7EC8FF; --trace-2:#5FD9C4; --trace-3:#E0A458;
+  --mark:#FF5A5A; --ok:#5CD68B; --warn:#E0A458;
+  --field:#0C1116;
+  --shadow:none;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--paper); color:var(--ink);
+  font:400 13px/1.5 ui-sans-serif,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.mono,input,select,td.num,.num{font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;font-variant-numeric:tabular-nums}
+
+/* ---------- chrome ---------- */
+header{
+  display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;
+  padding:10px 18px 8px;border-bottom:1px solid var(--rule);background:var(--panel);
+}
+header h1{
+  margin:0;font-size:15px;font-weight:650;letter-spacing:.14em;text-transform:uppercase;
+}
+header h1 span{color:var(--mark)}
+.sub{color:var(--ink-soft);font-size:11.5px;letter-spacing:.03em}
+.spacer{flex:1}
+.chip{
+  font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  border:1px solid var(--rule);padding:3px 8px;border-radius:2px;color:var(--ink-soft);
+}
+.chip b{color:var(--ink);font-weight:600}
+button{
+  font:inherit;background:var(--field);color:var(--ink);border:1px solid var(--rule);
+  padding:5px 11px;border-radius:2px;cursor:pointer;box-shadow:var(--shadow);
+}
+button:hover{border-color:var(--ink-soft)}
+button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{
+  outline:2px solid var(--mark);outline-offset:1px}
+button.primary{background:var(--ink);color:var(--paper);border-color:var(--ink);font-weight:600}
+button.primary:hover{opacity:.88}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.sm{padding:3px 8px;font-size:12px}
+
+nav{display:flex;gap:0;border-bottom:1px solid var(--rule);background:var(--panel);padding:0 12px;overflow-x:auto}
+nav button{
+  background:none;border:none;border-bottom:2px solid transparent;border-radius:0;
+  padding:9px 14px;color:var(--ink-soft);font-size:12px;letter-spacing:.06em;
+  text-transform:uppercase;box-shadow:none;white-space:nowrap;
+}
+nav button .idx{font-family:ui-monospace,monospace;opacity:.55;margin-right:7px;font-size:11px}
+nav button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--mark);font-weight:650}
+nav button:disabled{opacity:.32}
+
+main{padding:16px 18px 60px;max-width:1500px}
+.panel{border:1px solid var(--rule);background:var(--panel);border-radius:3px;margin-bottom:14px}
+.panel > h2{
+  margin:0;padding:8px 12px;font-size:11px;font-weight:650;letter-spacing:.13em;
+  text-transform:uppercase;color:var(--ink-soft);border-bottom:1px solid var(--rule);
+  display:flex;align-items:center;gap:10px;
+}
+.panel > h2 .hint{font-weight:400;letter-spacing:0;text-transform:none;font-size:11.5px;opacity:.85}
+.body{padding:12px}
+.row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+.col{flex:1;min-width:280px}
+.grid-f{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:10px 14px}
+label.f{display:block;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:3px}
+label.f abbr{text-decoration:none;border-bottom:1px dotted var(--ink-soft);cursor:help}
+input[type=text],input[type=number],select{
+  width:100%;padding:4px 6px;border:1px solid var(--rule);background:var(--field);
+  color:var(--ink);border-radius:2px;font-size:12.5px;
+}
+input[type=file]{font-size:12px}
+.inline{display:flex;align-items:center;gap:7px;font-size:12.5px}
+.inline input[type=checkbox]{margin:0;accent-color:var(--mark)}
+.btnbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
+.note{font-size:11.5px;color:var(--ink-soft);line-height:1.55}
+.note code{background:var(--panel2);padding:0 3px;border-radius:2px}
+hr.rule{border:none;border-top:1px solid var(--rule);margin:12px 0}
+
+table{border-collapse:collapse;width:100%;font-size:12px}
+th,td{border-bottom:1px solid var(--rule);padding:4px 7px;text-align:left}
+th{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);font-weight:600}
+td.num,th.num{text-align:right}
+tbody tr:hover{background:var(--panel2)}
+.scroll{max-height:280px;overflow:auto;border:1px solid var(--rule);border-radius:2px;background:var(--field)}
+
+canvas{display:block;width:100%;background:var(--field);border:1px solid var(--rule);border-radius:2px;touch-action:none}
+.canvas-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;font-size:12px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-soft);margin-top:6px}
+.legend i{display:inline-block;width:16px;height:2px;vertical-align:middle;margin-right:5px}
+
+.stat{display:flex;gap:22px;flex-wrap:wrap;margin:2px 0 10px}
+.stat div{min-width:96px}
+.stat .k{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-soft)}
+.stat .v{font-size:19px;font-weight:600;font-family:ui-monospace,monospace;line-height:1.25}
+.stat .v small{font-size:11px;font-weight:400;color:var(--ink-soft)}
+
+.verdict{border-left:3px solid var(--rule);padding:9px 12px;background:var(--panel2);border-radius:0 2px 2px 0;font-size:12.5px;line-height:1.6}
+.verdict.pos{border-left-color:var(--mark)}
+.verdict.neg{border-left-color:var(--ink-soft)}
+.verdict b{font-weight:650}
+
+.disclaimer{
+  position:fixed;left:0;right:0;bottom:0;z-index:50;
+  background:var(--panel);border-top:1px solid var(--rule);
+  padding:5px 18px;font-size:10.5px;color:var(--ink-soft);letter-spacing:.02em;
+  display:flex;gap:10px;align-items:center;
+}
+.disclaimer b{color:var(--mark);letter-spacing:.09em;text-transform:uppercase;font-size:10px}
+.progress{height:3px;background:var(--panel2);border-radius:2px;overflow:hidden;margin-top:8px;display:none}
+.progress.on{display:block}
+.progress i{display:block;height:100%;background:var(--mark);width:0%}
+.hidden{display:none !important}
+.tag{font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:1px 5px;border:1px solid var(--rule);border-radius:2px;color:var(--ink-soft)}
+.tag.ok{color:var(--ok);border-color:var(--ok)}
+.tag.no{color:var(--mark);border-color:var(--mark)}
+@media (prefers-reduced-motion:reduce){*{transition:none !important;animation:none !important}}
+@media (max-width:760px){ .col{min-width:100%} main{padding:12px} }
+</style>
+</head>
+<body data-theme="paper">
+
+<header>
+  <h1>JLBA<span>·</span>Back-Averaging</h1>
+  <div class="sub">EEG–poliEMG · mioclonia e potencial de prontidão</div>
+  <div class="spacer"></div>
+  <div class="chip" id="chipData">sem dados</div>
+  <div class="chip" id="chipMk">0 marcadores</div>
+  <button class="sm" id="btnTheme">Modo bancada</button>
+</header>
+
+<nav id="tabs">
+  <button data-tab="dados" aria-selected="true"><span class="idx">1</span>Dados</button>
+  <button data-tab="pre" aria-selected="false" disabled><span class="idx">2</span>Pré-processamento</button>
+  <button data-tab="det" aria-selected="false" disabled><span class="idx">3</span>Detecção</button>
+  <button data-tab="avg" aria-selected="false" disabled><span class="idx">4</span>Épocas e média</button>
+  <button data-tab="val" aria-selected="false" disabled><span class="idx">5</span>Validação</button>
+  <button data-tab="rep" aria-selected="false" disabled><span class="idx">6</span>Relatório</button>
+</nav>
+
+<main>
+
+<!-- ============================ 1 · DADOS ============================ -->
+<section id="tab-dados">
+  <div class="panel">
+    <h2>Carregar registro <span class="hint">TXT/CSV multicanal ou EDF/EDF+. Os dados permanecem no navegador.</span></h2>
+    <div class="body">
+      <div class="row">
+        <div class="col">
+          <label class="f" for="fileIn">Arquivo</label>
+          <input type="file" id="fileIn" accept=".txt,.csv,.tsv,.dat,.edf,.bdf">
+          <div class="note" style="margin-top:8px">
+            TXT/CSV: uma coluna por canal, separador espaço, tabulação, vírgula ou ponto-e-vírgula.
+            Cabeçalho opcional. Formato do BacAv (espaço, sem cabeçalho, 1ª coluna = tempo) é lido diretamente.
+          </div>
+        </div>
+        <div class="col">
+          <label class="f">Registro sintético para validação</label>
+          <select id="synMode">
+            <option value="cortical">Mioclonia cortical — espícula P/N a −20 ms em C3</option>
+            <option value="bp">Mioclonia funcional — Bereitschaftspotential</option>
+            <option value="none">Controle negativo — sem transiente time-locked</option>
+          </select>
+          <div class="btnbar">
+            <button class="primary" id="btnSyn">Carregar exemplo</button>
+          </div>
+          <div class="note" style="margin-top:8px">
+            9 canais EEG (10-20) + 3 canais EMG do antebraço direito, 1000 Hz, 90 s.
+            A verdade-terreno é conhecida: use para verificar se o pipeline recupera a latência correta
+            e se o controle negativo <b>não</b> produz falso-positivo.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel hidden" id="panMap">
+    <h2>Mapeamento de canais <span class="hint">Atribua o tipo de cada coluna antes de prosseguir.</span></h2>
+    <div class="body">
+      <div class="row" style="align-items:flex-end;margin-bottom:12px">
+        <div style="width:150px">
+          <label class="f" for="fsIn">Amostragem (Hz)</label>
+          <input type="number" id="fsIn" min="1" step="1" value="1000">
+        </div>
+        <div style="width:150px">
+          <label class="f">Amostras</label>
+          <input type="text" id="nSamp" readonly>
+        </div>
+        <div style="width:150px">
+          <label class="f">Duração</label>
+          <input type="text" id="durTxt" readonly>
+        </div>
+      </div>
+      <div class="scroll"><table>
+        <thead><tr><th style="width:52px" class="num">Col</th><th>Rótulo</th><th style="width:150px">Tipo</th><th style="width:90px">Unidade</th><th class="num" style="width:130px">Faixa</th></tr></thead>
+        <tbody id="mapBody"></tbody>
+      </table></div>
+      <div class="btnbar">
+        <button class="primary" id="btnAccept">Confirmar mapeamento</button>
+        <span class="note" id="mapMsg"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= 2 · PRÉ-PROCESSAMENTO ======================= -->
+<section id="tab-pre" class="hidden">
+  <div class="panel">
+    <h2>Filtros <span class="hint">Fase zero (forward–backward). Nenhum deslocamento de latência é introduzido.</span></h2>
+    <div class="body">
+      <div class="row">
+        <div class="col">
+          <div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:8px">Canais EEG</div>
+          <div class="grid-f">
+            <div><label class="f" for="eegHP">Passa-altas (Hz)</label><input type="number" id="eegHP" value="1" step="0.01" min="0"></div>
+            <div><label class="f" for="eegLP">Passa-baixas (Hz)</label><input type="number" id="eegLP" value="70" step="1" min="1"></div>
+            <div><label class="f" for="eegOrd">Ordem</label>
+              <select id="eegOrd"><option>2</option><option selected>4</option><option>6</option><option>8</option></select></div>
+          </div>
+          <div class="btnbar">
+            <button class="sm" data-preset="mio">Preset mioclonia 1–70 Hz</button>
+            <button class="sm" data-preset="bp">Preset BP 0,01–50 Hz</button>
+          </div>
+        </div>
+        <div class="col">
+          <div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:8px">Canais EMG</div>
+          <div class="grid-f">
+            <div><label class="f" for="emgHP">Passa-altas (Hz)</label><input type="number" id="emgHP" value="10" step="1" min="0"></div>
+            <div><label class="f" for="emgLP">Passa-baixas (Hz)</label><input type="number" id="emgLP" value="250" step="1" min="1"></div>
+            <div><label class="f" for="emgOrd">Ordem</label>
+              <select id="emgOrd"><option>2</option><option selected>4</option><option>6</option></select></div>
+          </div>
+          <div class="btnbar"><button class="sm" data-preset="emg2">Alternativo 20–300 Hz</button></div>
+        </div>
+      </div>
+      <hr class="rule">
+      <div class="row">
+        <div class="col">
+          <div class="grid-f">
+            <div><label class="f" for="notchF">Notch (Hz)</label>
+              <select id="notchF"><option value="0">desligado</option><option value="50">50</option><option value="60">60</option></select></div>
+            <div><label class="f" for="notchH">Harmônicos</label>
+              <select id="notchH"><option value="1">1º</option><option value="2" selected>até 2º</option><option value="3">até 3º</option></select></div>
+            <div><label class="f" for="reref">Referência EEG</label>
+              <select id="reref"><option value="none">original</option><option value="avg">média comum</option><option value="ch">eletrodo único</option></select></div>
+            <div id="rerefChWrap" class="hidden"><label class="f" for="rerefCh">Eletrodo</label><select id="rerefCh"></select></div>
+          </div>
+          <div class="inline" style="margin-top:10px"><input type="checkbox" id="detrendChk" checked><label for="detrendChk">Remover tendência linear por canal</label></div>
+        </div>
+        <div class="col">
+          <div class="grid-f">
+            <div><label class="f" for="envMode"><abbr title="Aplicado apenas ao sinal usado pelo detector; a média do EMG usa o retificado puro.">Envelope EMG</abbr></label>
+              <select id="envMode"><option value="none">retificado puro</option><option value="rms" selected>RMS móvel</option><option value="lp">passa-baixas</option></select></div>
+            <div><label class="f" for="envWin">Janela / corte</label><input type="number" id="envWin" value="20" step="1" min="1"></div>
+          </div>
+          <div class="note" style="margin-top:8px">RMS móvel em ms; passa-baixas em Hz. O envelope suaviza o detector sem alterar a média exibida.</div>
+        </div>
+      </div>
+      <div class="btnbar">
+        <button class="primary" id="btnFilter">Aplicar filtros</button>
+        <span class="note" id="filtMsg"></span>
+      </div>
+      <div class="progress" id="filtProg"><i></i></div>
+    </div>
+  </div>
+  <div class="panel"><h2>Traçado</h2><div class="body"><div id="viewerHostPre"></div></div></div>
+</section>
+
+<!-- =========================== 3 · DETECÇÃO =========================== -->
+<section id="tab-det" class="hidden">
+  <div class="panel">
+    <h2>Detecção de abalos <span class="hint">O marcador é colocado no início do burst, nunca no pico.</span></h2>
+    <div class="body">
+      <div class="row" style="align-items:flex-end">
+        <div style="width:220px"><label class="f" for="anchorCh">Canal âncora (EMG)</label><select id="anchorCh"></select></div>
+        <div style="width:220px"><label class="f" for="algo">Algoritmo</label>
+          <select id="algo">
+            <option value="bacav">Limiar com validação de contexto (BacAv)</option>
+            <option value="sd">Linha de base + k·DP (Hodges-Bui)</option>
+            <option value="tkeo">TKEO + limiar adaptativo</option>
+            <option value="manual">Somente manual</option>
+          </select></div>
+      </div>
+
+      <div id="parBacav" class="grid-f" style="margin-top:12px">
+        <div><label class="f" for="pThr"><abbr title="Amplitude EMG normalizada (0–1) que deve ser ultrapassada para o ponto virar candidato.">Limiar</abbr></label><input type="number" id="pThr" value="0.25" step="0.01" min="0.01" max="1"></div>
+        <div><label class="f" for="pTb"><abbr title="Janela anterior usada para verificar se a linha de base está silenciosa (s).">Tempo antes (s)</abbr></label><input type="number" id="pTb" value="0.15" step="0.01" min="0.01"></div>
+        <div><label class="f" for="pAb"><abbr title="A amplitude média na janela anterior deve ser MENOR que este valor.">Amplitude antes</abbr></label><input type="number" id="pAb" value="0.05" step="0.01" min="0"></div>
+        <div><label class="f" for="pTa"><abbr title="Janela posterior usada para confirmar que o burst é substancial (s).">Tempo depois (s)</abbr></label><input type="number" id="pTa" value="0.03" step="0.005" min="0.005"></div>
+        <div><label class="f" for="pAa"><abbr title="A amplitude média na janela posterior deve ser MAIOR que este valor.">Amplitude depois</abbr></label><input type="number" id="pAa" value="0.15" step="0.01" min="0"></div>
+        <div><label class="f" for="pBd"><abbr title="Período refratário após um burst; impede marcar o mesmo abalo duas vezes.">Duração do burst (s)</abbr></label><input type="number" id="pBd" value="0.4" step="0.05" min="0.02"></div>
+      </div>
+
+      <div id="parSD" class="grid-f hidden" style="margin-top:12px">
+        <div><label class="f" for="sdK">k (desvios-padrão)</label><input type="number" id="sdK" value="2" step="0.5" min="1"></div>
+        <div><label class="f" for="sdWin">Média móvel (ms)</label><input type="number" id="sdWin" value="25" step="1" min="1"></div>
+        <div><label class="f" for="sdBd">Duração do burst (s)</label><input type="number" id="sdBd" value="0.4" step="0.05" min="0.02"></div>
+        <div><label class="f" for="sdMin">Duração mínima acima do limiar (ms)</label><input type="number" id="sdMin" value="10" step="1" min="1"></div>
+      </div>
+
+      <div id="parTK" class="grid-f hidden" style="margin-top:12px">
+        <div><label class="f" for="tkK">k (desvios-padrão)</label><input type="number" id="tkK" value="4" step="0.5" min="1"></div>
+        <div><label class="f" for="tkWin">Suavização (ms)</label><input type="number" id="tkWin" value="15" step="1" min="1"></div>
+        <div><label class="f" for="tkBd">Duração do burst (s)</label><input type="number" id="tkBd" value="0.4" step="0.05" min="0.02"></div>
+      </div>
+
+      <hr class="rule">
+      <div class="row" style="align-items:flex-end">
+        <div style="width:200px">
+          <label class="f" for="leadComp"><abbr title="Uma janela de suavização centrada faz o limiar ser cruzado antes do início real do burst, por metade da largura da janela. A compensação torna o resultado independente do ajuste do envelope.">Compensação do envelope (ms)</abbr></label>
+          <input type="number" id="leadComp" value="10" step="1">
+        </div>
+        <div class="inline"><input type="checkbox" id="autoLead" checked><label for="autoLead">calcular automaticamente</label></div>
+        <div class="inline" style="margin-left:12px"><input type="checkbox" id="xcorrAlign"><label for="xcorrAlign"><abbr title="Realinha cada abalo pela correlação cruzada do EMG retificado com o modelo médio. Reduz o jitter; não corrige viés sistemático.">Realinhar por correlação cruzada</abbr></label></div>
+      </div>
+      <div class="btnbar">
+        <button class="primary" id="btnDetect">Detectar</button>
+        <button id="btnClearMk">Limpar marcadores</button>
+        <div class="inline" style="margin-left:8px"><input type="checkbox" id="manualMode"><label for="manualMode">Edição manual no traçado</label></div>
+        <span class="note" id="detMsg"></span>
+      </div>
+      <div class="note" id="detTip" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+  <div class="panel"><h2>Traçado <span class="hint">Rolagem = zoom · arrastar = deslocar · na edição manual, clique adiciona e Alt+clique remove.</span></h2>
+    <div class="body"><div id="viewerHostDet"></div></div></div>
+
+  <div class="panel"><h2>Latências entre músculos <span class="hint">Em relação ao canal âncora, sobre a média retificada.</span></h2>
+    <div class="body"><div id="musTab"><div class="note">Detecte os abalos e calcule a média para preencher esta tabela.</div></div></div></div>
+</section>
+
+<!-- ======================= 4 · ÉPOCAS E MÉDIA ======================= -->
+<section id="tab-avg" class="hidden">
+  <div class="panel">
+    <h2>Segmentação</h2>
+    <div class="body">
+      <div class="btnbar" style="margin:0 0 12px">
+        <button class="sm" data-ep="focal">Mioclonia focal −200/+100 ms</button>
+        <button class="sm" data-ep="mio">Mioclonia padrão −500/+200 ms</button>
+        <button class="sm" data-ep="bp">BP −2500/+500 ms</button>
+      </div>
+      <div class="grid-f">
+        <div><label class="f" for="epPre">Pré-evento (ms)</label><input type="number" id="epPre" value="500" step="10" min="10"></div>
+        <div><label class="f" for="epPost">Pós-evento (ms)</label><input type="number" id="epPost" value="200" step="10" min="10"></div>
+        <div><label class="f" for="blA">Linha de base de (ms)</label><input type="number" id="blA" value="-500" step="10"></div>
+        <div><label class="f" for="blB">até (ms)</label><input type="number" id="blB" value="-300" step="10"></div>
+        <div><label class="f" for="blMode">Correção de base</label>
+          <select id="blMode"><option value="mean">subtração da média</option><option value="lin">detrend linear</option><option value="none">nenhuma</option></select></div>
+        <div><label class="f" for="ppRej">Rejeição pico-a-pico EEG (µV)</label><input type="number" id="ppRej" value="150" step="10" min="0"></div>
+        <div><label class="f" for="blEmgRej"><abbr title="Rejeita épocas com atividade EMG na linha de base, isto é, abalos sobrepostos.">EMG na base &lt; (0–1)</abbr></label><input type="number" id="blEmgRej" value="0.08" step="0.01" min="0"></div>
+        <div><label class="f" for="avgMode">Estimador</label>
+          <select id="avgMode"><option value="mean">média aritmética</option><option value="median">mediana</option><option value="trim">média aparada 20%</option></select></div>
+        <div><label class="f" for="t0mode"><abbr title="O marcador cai onde o EMG cruza o limiar, sempre alguns ms após o início real do burst. Referenciar t=0 ao início do EMG médio elimina essa dependência do limiar.">Referência de t = 0</abbr></label>
+          <select id="t0mode"><option value="emg" selected>início do EMG médio</option><option value="marker">marcador do detector</option></select></div>
+        <div><label class="f" for="zeroFrac">Critério de início (% do pico)</label><input type="number" id="zeroFrac" value="20" step="5" min="2" max="50"></div>
+      </div>
+      <div class="btnbar">
+        <button class="primary" id="btnAvg">Segmentar e promediar</button>
+        <span class="note" id="avgMsg"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Back-average</h2>
+    <div class="body">
+      <div class="stat" id="avgStat"></div>
+      <div class="canvas-tools">
+        <label class="f" style="margin:0">Canal de análise</label>
+        <select id="anaCh" style="width:110px"></select>
+        <label class="f" style="margin:0 0 0 10px">Exibir</label>
+        <div id="chToggles" style="display:flex;gap:10px;flex-wrap:wrap"></div>
+        <div class="spacer" style="flex:1"></div>
+        <div class="inline"><input type="checkbox" id="showSEM" checked><label for="showSEM">±1 EPM</label></div>
+        <div class="inline"><input type="checkbox" id="showBfly"><label for="showBfly">butterfly</label></div>
+        <label class="f" style="margin:0 0 0 10px">Ganho</label>
+        <input type="number" id="avgGain" value="0" step="1" style="width:70px" title="0 = automático; valor em µV de fundo de escala">
+      </div>
+      <canvas id="cvAvg" height="430"></canvas>
+      <div class="legend">
+        <span><i style="background:var(--trace)"></i>EEG médio</span>
+        <span><i style="background:var(--trace-2)"></i>EMG retificado médio</span>
+        <span><i style="background:var(--mark)"></i>t = 0 (início do EMG)</span>
+        <span>Negativo para cima é convenção clínica — alterne em <b>Polaridade</b>.</span>
+        <span class="inline"><input type="checkbox" id="negUp"><label for="negUp">Polaridade: negativo para cima</label></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Imagem de épocas <span class="hint">Cada linha é um abalo, ordenado no tempo. Uma faixa vertical alinhada em t=0 é o transiente; ruído aleatório não forma faixa.</span></h2>
+    <div class="body"><canvas id="cvRaster" height="260"></canvas></div>
+  </div>
+</section>
+
+<!-- =========================== 5 · VALIDAÇÃO =========================== -->
+<section id="tab-val" class="hidden">
+  <div class="panel">
+    <h2>Consistência <span class="hint">Reordenar e dividir; a onda tem de sobreviver às duas metades.</span></h2>
+    <div class="body">
+      <div class="btnbar" style="margin:0 0 10px">
+        <button class="primary" id="btnSplit">Reordenar e dividir</button>
+        <button id="btnOddEven">Par / ímpar</button>
+        <span class="note" id="splitMsg"></span>
+      </div>
+      <canvas id="cvSplit" height="270"></canvas>
+      <div class="legend"><span><i style="background:var(--trace)"></i>metade A</span><span><i style="background:var(--trace-3)"></i>metade B</span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Significância <span class="hint">Bootstrap das épocas e distribuição nula por gatilhos aleatórios.</span></h2>
+    <div class="body">
+      <div class="grid-f">
+        <div><label class="f" for="nBoot">Reamostragens bootstrap</label><input type="number" id="nBoot" value="500" step="100" min="100"></div>
+        <div><label class="f" for="nSurr">Surrogatos</label><input type="number" id="nSurr" value="200" step="50" min="50"></div>
+        <div><label class="f" for="alphaS">Envelope</label>
+          <select id="alphaS"><option value="0.05" selected>95%</option><option value="0.01">99%</option></select></div>
+        <div><label class="f" for="minDur">Duração mínima significativa (ms)</label><input type="number" id="minDur" value="10" step="1" min="1"></div>
+      </div>
+      <div class="btnbar">
+        <button class="primary" id="btnStats">Executar</button>
+        <span class="note" id="statMsg"></span>
+      </div>
+      <div class="progress" id="statProg"><i></i></div>
+      <canvas id="cvStat" height="300" style="margin-top:12px"></canvas>
+      <div class="legend">
+        <span><i style="background:var(--trace)"></i>média observada</span>
+        <span><i style="background:var(--ink-soft)"></i>envelope nulo (surrogatos)</span>
+        <span><i style="background:var(--mark)"></i>trechos significativos</span>
+      </div>
+      <div id="statVerdict" style="margin-top:12px"></div>
+    </div>
+  </div>
+</section>
+
+<!-- =========================== 6 · RELATÓRIO =========================== -->
+<section id="tab-rep" class="hidden">
+  <div class="panel">
+    <h2>Medidas</h2>
+    <div class="body">
+      <div class="row" style="align-items:flex-end;margin-bottom:10px">
+        <div style="width:170px"><label class="f" for="pkA">Busca de pico de (ms)</label><input type="number" id="pkA" value="-100" step="5"></div>
+        <div style="width:170px"><label class="f" for="pkB">até (ms)</label><input type="number" id="pkB" value="20" step="5"></div>
+        <button id="btnPeaks">Recalcular picos</button>
+      </div>
+      <div id="repTab"><div class="note">Calcule a média para gerar as medidas.</div></div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Interpretação de apoio</h2>
+    <div class="body"><div id="repVerdict"><div class="note">Aguardando a média.</div></div></div>
+  </div>
+  <div class="panel">
+    <h2>Exportar</h2>
+    <div class="body">
+      <div class="btnbar" style="margin:0">
+        <button id="expCsvAvg">Médias (CSV longo, para R)</button>
+        <button id="expCsvEp">Épocas individuais (CSV)</button>
+        <button id="expSvg">Figura (SVG)</button>
+        <button id="expPng">Figura (PNG)</button>
+        <button id="expJson">Sessão (JSON)</button>
+        <button id="expHtml">Relatório (HTML)</button>
+      </div>
+      <div class="note" style="margin-top:10px">
+        O CSV longo sai como <code>epoch,time_ms,channel,value</code>, pronto para <code>read.csv()</code>.
+        A sessão JSON guarda parâmetros, marcadores e épocas excluídas — nunca o sinal bruto.
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<div class="disclaimer">
+  <b>Uso em pesquisa</b>
+  <span>Ferramenta de apoio à análise. Não substitui o julgamento clínico e não constitui dispositivo médico certificado.</span>
+</div>
+
+<script>
+"use strict";
+/* ==========================================================================
+   0 · CONSTANTES E ESTADO
+   ========================================================================== */
+const DEFAULTS = {
+  fs: 1000,
+  eeg: { hp: 1, lp: 70, ord: 4 },
+  eegBP: { hp: 0.01, lp: 50, ord: 4 },
+  emg: { hp: 10, lp: 250, ord: 4 },
+  epoch: { pre: 500, post: 200 },
+  detect: { thr: 0.25, tb: 0.15, ab: 0.05, ta: 0.03, aa: 0.15, bd: 0.4 },
+  HP_BIQUAD_MIN_RATIO: 5e-4,   // abaixo disso usa seções RC de 1ª ordem
+  PAD_MAX: 5000,
+  RASTER_MAX_ROWS: 400
+};
+
+const DATA = {
+  loaded:false, fs:1000, n:0, filename:'',
+  labels:[], types:[], units:[],
+  raw:[],        // Float32Array[] — sinal como lido
+  proc:[],       // Float32Array[] — após filtros
+  rect:[],       // Float32Array[] — EMG retificado (µV), índice paralelo a proc
+  env:[],        // Float32Array[] — envelope normalizado 0–1 para o detector
+  filtered:false
+};
+let MARKERS = [];            // amostras (float, sub-amostral)
+let EP = null;               // resultado da segmentação
+let STATS = null;            // resultado da validação
+let PARAMS = {};             // snapshot dos parâmetros usados
+
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const fmt = (v,d=1) => (v===null||v===undefined||!isFinite(v)) ? '—' : v.toFixed(d);
+
+/* ==========================================================================
+   1 · DSP
+   ========================================================================== */
+const DSP = {
+  /* Butterworth passa-baixas: cascata de biquads (RBJ), ordem par. */
+  butterLP(fc, fs, order){
+    const N = Math.max(1, Math.round(order/2));
+    const nyq = fs/2;
+    if (fc >= nyq*0.999) return [];
+    const w0 = 2*Math.PI*fc/fs, cw = Math.cos(w0), sw = Math.sin(w0);
+    const s = [];
+    for (let k=0;k<N;k++){
+      const Q = 1/(2*Math.cos((2*k+1)*Math.PI/(4*N)));
+      const al = sw/(2*Q), a0 = 1+al;
+      s.push({ b0:((1-cw)/2)/a0, b1:(1-cw)/a0, b2:((1-cw)/2)/a0, a1:(-2*cw)/a0, a2:(1-al)/a0 });
+    }
+    return s;
+  },
+  /* Butterworth passa-altas. Para fc/fs muito baixo, cascata RC de 1ª ordem:
+     a forma biquad sofre cancelamento catastrófico quando cos(w0)→1. */
+  butterHP(fc, fs, order){
+    if (fc <= 0) return [];
+    const N = Math.max(1, Math.round(order/2));
+    if (fc/fs < DEFAULTS.HP_BIQUAD_MIN_RATIO){
+      const RC = 1/(2*Math.PI*fc), dt = 1/fs, a = RC/(RC+dt), s=[];
+      for (let k=0;k<N;k++) s.push({ b0:a, b1:-a, b2:0, a1:-a, a2:0 });
+      return s;
+    }
+    const w0 = 2*Math.PI*fc/fs, cw = Math.cos(w0), sw = Math.sin(w0), s=[];
+    for (let k=0;k<N;k++){
+      const Q = 1/(2*Math.cos((2*k+1)*Math.PI/(4*N)));
+      const al = sw/(2*Q), a0 = 1+al;
+      s.push({ b0:((1+cw)/2)/a0, b1:(-(1+cw))/a0, b2:((1+cw)/2)/a0, a1:(-2*cw)/a0, a2:(1-al)/a0 });
+    }
+    return s;
+  },
+  notch(f0, fs, Q=30){
+    if (f0<=0 || f0>=fs/2) return [];
+    const w0 = 2*Math.PI*f0/fs, cw=Math.cos(w0), al=Math.sin(w0)/(2*Q), a0=1+al;
+    return [{ b0:1/a0, b1:(-2*cw)/a0, b2:1/a0, a1:(-2*cw)/a0, a2:(1-al)/a0 }];
+  },
+  /* filtragem direta (causal) de uma cascata */
+  _fwd(x, secs){
+    const y = Float64Array.from(x);
+    for (const s of secs){
+      let x1=0,x2=0,y1=0,y2=0;
+      for (let i=0;i<y.length;i++){
+        const xn=y[i];
+        const yn = s.b0*xn + s.b1*x1 + s.b2*x2 - s.a1*y1 - s.a2*y2;
+        x2=x1; x1=xn; y2=y1; y1=yn; y[i]=yn;
+      }
+    }
+    return y;
+  },
+  /* filtfilt com padding por reflexão ímpar — fase estritamente zero */
+  filtfilt(x, secs){
+    if (!secs || !secs.length) return Float32Array.from(x);
+    const n = x.length;
+    const pad = Math.min(DEFAULTS.PAD_MAX, Math.max(9, Math.floor(n/2)-1));
+    const m = n + 2*pad;
+    const b = new Float64Array(m);
+    for (let i=0;i<pad;i++) b[i] = 2*x[0] - x[pad-i];
+    for (let i=0;i<n;i++)   b[pad+i] = x[i];
+    for (let i=0;i<pad;i++) b[pad+n+i] = 2*x[n-1] - x[n-2-i];
+    let y = this._fwd(b, secs);
+    y.reverse();
+    y = this._fwd(y, secs);
+    y.reverse();
+    const out = new Float32Array(n);
+    for (let i=0;i<n;i++) out[i] = y[pad+i];
+    return out;
+  },
+  detrend(x){
+    const n = x.length; if (!n) return x;
+    let sx=0, sy=0, sxx=0, sxy=0;
+    for (let i=0;i<n;i++){ sx+=i; sy+=x[i]; sxx+=i*i; sxy+=i*x[i]; }
+    const den = n*sxx - sx*sx;
+    const b = den===0 ? 0 : (n*sxy - sx*sy)/den;
+    const a = (sy - b*sx)/n;
+    const o = new Float32Array(n);
+    for (let i=0;i<n;i++) o[i] = x[i] - (a + b*i);
+    return o;
+  },
+  movRMS(x, win){
+    const n=x.length, o=new Float32Array(n), h=Math.max(1,Math.floor(win/2));
+    let acc=0, cnt=0;
+    for (let i=0;i<Math.min(h+1,n);i++){ acc+=x[i]*x[i]; cnt++; }
+    for (let i=0;i<n;i++){
+      o[i]=Math.sqrt(acc/Math.max(1,cnt));
+      const add=i+h+1, rem=i-h;
+      if (add<n){ acc+=x[add]*x[add]; cnt++; }
+      if (rem>=0){ acc-=x[rem]*x[rem]; cnt--; }
+    }
+    return o;
+  },
+  movMean(x, win){
+    const n=x.length, o=new Float32Array(n), h=Math.max(1,Math.floor(win/2));
+    let acc=0,cnt=0;
+    for (let i=0;i<Math.min(h+1,n);i++){ acc+=x[i]; cnt++; }
+    for (let i=0;i<n;i++){
+      o[i]=acc/Math.max(1,cnt);
+      const add=i+h+1, rem=i-h;
+      if (add<n){ acc+=x[add]; cnt++; }
+      if (rem>=0){ acc-=x[rem]; cnt--; }
+    }
+    return o;
+  },
+  /* Operador de energia de Teager-Kaiser */
+  tkeo(x){
+    const n=x.length, o=new Float32Array(n);
+    for (let i=1;i<n-1;i++) o[i] = x[i]*x[i] - x[i-1]*x[i+1];
+    o[0]=o[1]; o[n-1]=o[n-2];
+    for (let i=0;i<n;i++) o[i]=Math.abs(o[i]);
+    return o;
+  },
+  rectify(x){ const o=new Float32Array(x.length); for(let i=0;i<x.length;i++) o[i]=Math.abs(x[i]); return o; },
+  normalize(x){
+    let mx=0; for (let i=0;i<x.length;i++) if (x[i]>mx) mx=x[i];
+    const o=new Float32Array(x.length); if (mx<=0) return o;
+    for (let i=0;i<x.length;i++) o[i]=x[i]/mx; return o;
+  },
+  percentile(sorted, p){
+    if (!sorted.length) return NaN;
+    const i = (sorted.length-1)*p, lo = Math.floor(i), hi = Math.ceil(i);
+    return sorted[lo] + (sorted[hi]-sorted[lo])*(i-lo);
+  },
+  median(arr){ const s=Array.from(arr).sort((a,b)=>a-b); return this.percentile(s,0.5); }
+};
+
+/* ==========================================================================
+   2 · GERADOR SINTÉTICO (verdade-terreno conhecida)
+   ========================================================================== */
+function whiteNoise(n, sd, rng){ const o=new Float32Array(n); for(let i=0;i<n;i++){ let u=0,v=0; while(!u)u=rng(); while(!v)v=rng(); o[i]=sd*Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);} return o; }
+function mulberry(seed){ return function(){ seed|=0; seed=seed+0x6D2B79F5|0; let t=Math.imul(seed^seed>>>15,1|seed); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+
+function makeSynthetic(mode){
+  const fs=1000, dur=90, n=fs*dur, rng=mulberry(20250811);
+  const eeg=['F3','Fz','F4','C3','Cz','C4','P3','Pz','P4'];
+  const emg=['FCR-D','ECR-D','ADM-D'];
+  const labels=eeg.concat(emg);
+  const types=eeg.map(()=> 'EEG').concat(emg.map(()=> 'EMG'));
+  const units=eeg.map(()=> 'uV').concat(emg.map(()=> 'uV'));
+  const ch = labels.map(()=> new Float32Array(n));
+
+  // fundo EEG: ruído filtrado + ritmo alfa + deriva lenta
+  for (let c=0;c<eeg.length;c++){
+    const w = whiteNoise(n, 22, rng);
+    const bg = DSP.filtfilt(w, DSP.butterLP(35, fs, 4));
+    const ph = rng()*6.28, af = 9.5+rng();
+    for (let i=0;i<n;i++){
+      const t=i/fs;
+      ch[c][i] = bg[i]*1.6 + 9*Math.sin(2*Math.PI*af*t+ph) + 6*Math.sin(2*Math.PI*0.4*t+c);
+    }
+  }
+  // ruído de base do EMG
+  for (let c=0;c<emg.length;c++){
+    const w = whiteNoise(n, 3.5, rng);
+    ch[eeg.length+c] = DSP.filtfilt(w, DSP.butterLP(300, fs, 4));
+  }
+
+  // tempos dos abalos
+  const times=[]; let t = mode==='bp' ? 4 : 2.5;
+  const minGap = mode==='bp' ? 3.2 : 0.9, spread = mode==='bp' ? 2.2 : 1.6;
+  while (t < dur-2.5){ times.push(t); t += minGap + rng()*spread; }
+
+  // topografias
+  const topoSpike = {F3:.55,Fz:.35,F4:.12,C3:1.0,Cz:.62,C4:.16,P3:.48,Pz:.30,P4:.10};
+  const topoBP    = {F3:.72,Fz:.90,F4:.62,C3:.88,Cz:1.0,C4:.60,P3:.42,Pz:.46,P4:.34};
+
+  for (const tk of times){
+    const s0 = Math.round(tk*fs);
+    // burst EMG de 30 ms, agonista/antagonista sincrônicos, ADM 4 ms depois
+    for (let c=0;c<emg.length;c++){
+      const lag = c===2 ? 4 : 0, amp = c===0?230:(c===1?190:150);
+      for (let k=0;k<40;k++){
+        const i=s0+lag+k; if (i<0||i>=n) continue;
+        const envv=Math.exp(-Math.pow((k-14)/9,2));
+        ch[eeg.length+c][i] += amp*envv*(rng()*2-1);
+      }
+    }
+    // transiente cortical
+    if (mode==='cortical'){
+      for (let k=-120;k<=60;k++){
+        const i=s0+k; if (i<0||i>=n) continue;
+        // pico positivo a −20 ms, componente negativa a −4 ms
+        const w = 9.0*Math.exp(-Math.pow((k+20)/6.0,2)) - 6.0*Math.exp(-Math.pow((k+4)/8.5,2));
+        for (let c=0;c<eeg.length;c++) ch[c][i] += w*(topoSpike[eeg[c]]||0.1);
+      }
+    } else if (mode==='bp'){
+      for (let k=-1600;k<=120;k++){
+        const i=s0+k; if (i<0||i>=n) continue;
+        let w=0;
+        if (k<=0){ const u=(k+1600)/1600; w = -13*Math.pow(Math.max(0,u),2.4); }
+        else { w = -13*Math.exp(-k/70); }
+        for (let c=0;c<eeg.length;c++) ch[c][i] += w*(topoBP[eeg[c]]||0.3);
+      }
+    }
+  }
+  return { fs, n, labels, types, units, ch, filename:'sintetico_'+mode+'.txt', truth:{mode,times} };
+}
+
+/* ==========================================================================
+   3 · LEITURA DE ARQUIVOS
+   ========================================================================== */
+function parseDelimited(text){
+  const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+  if (!lines.length) throw new Error('Arquivo vazio.');
+  const cand = [/\t/, /;/, /,/, /\s+/];
+  let delim = /\s+/, best = 0;
+  for (const d of cand){ const c = lines[Math.min(1,lines.length-1)].trim().split(d).length; if (c>best){best=c; delim=d;} }
+  const first = lines[0].trim().split(delim);
+  const numericFirst = first.every(v => v!=='' && isFinite(Number(v.replace(',', '.'))));
+  const header = numericFirst ? null : first;
+  const start = numericFirst ? 0 : 1;
+  const ncol = first.length;
+  const nrow = lines.length - start;
+  const cols = Array.from({length:ncol}, ()=> new Float32Array(nrow));
+  for (let r=0;r<nrow;r++){
+    const p = lines[r+start].trim().split(delim);
+    for (let c=0;c<ncol;c++){ const v = Number((p[c]||'').replace(',', '.')); cols[c][r] = isFinite(v)?v:0; }
+  }
+  return { cols, header, n:nrow };
+}
+
+function parseEDF(buf){
+  const dv = new DataView(buf), td = new TextDecoder('ascii');
+  const str = (off,len)=> td.decode(new Uint8Array(buf,off,len)).trim();
+  const nRec = parseInt(str(236,8),10);
+  const durRec = parseFloat(str(244,8));
+  const ns = parseInt(str(252,4),10);
+  if (!ns || !isFinite(durRec)) throw new Error('Cabeçalho EDF inválido.');
+  let o = 256;
+  const label=[],phMin=[],phMax=[],dgMin=[],dgMax=[],spr=[],unit=[];
+  for (let i=0;i<ns;i++) label.push(str(o+i*16,16)); o+=ns*16;
+  o+=ns*80; // transdutor
+  for (let i=0;i<ns;i++) unit.push(str(o+i*8,8)); o+=ns*8;
+  for (let i=0;i<ns;i++) phMin.push(parseFloat(str(o+i*8,8))); o+=ns*8;
+  for (let i=0;i<ns;i++) phMax.push(parseFloat(str(o+i*8,8))); o+=ns*8;
+  for (let i=0;i<ns;i++) dgMin.push(parseFloat(str(o+i*8,8))); o+=ns*8;
+  for (let i=0;i<ns;i++) dgMax.push(parseFloat(str(o+i*8,8))); o+=ns*8;
+  o+=ns*80; // pré-filtragem
+  for (let i=0;i<ns;i++) spr.push(parseInt(str(o+i*8,8),10)); o+=ns*8;
+  o+=ns*32;
+  const dataOff = parseInt(str(184,8),10) || o;
+
+  const sprMax = Math.max(...spr);
+  const fs = sprMax/durRec;
+  const nOut = nRec*sprMax;
+  const cols = spr.map(()=> new Float32Array(nOut));
+  const recSamples = spr.reduce((a,b)=>a+b,0);
+  for (let r=0;r<nRec;r++){
+    let p = dataOff + r*recSamples*2;
+    for (let i=0;i<ns;i++){
+      const k = spr[i];
+      const gain = (phMax[i]-phMin[i])/((dgMax[i]-dgMin[i])||1);
+      const off  = phMax[i] - gain*dgMax[i];
+      const tmp = new Float32Array(k);
+      for (let j=0;j<k;j++){ tmp[j] = dv.getInt16(p+j*2, true)*gain + off; }
+      p += k*2;
+      const base = r*sprMax, ratio = sprMax/k;
+      if (ratio===1){ cols[i].set(tmp, base); }
+      else { for (let j=0;j<sprMax;j++){ const u=j/ratio, a=Math.floor(u), b=Math.min(k-1,a+1); cols[i][base+j]=tmp[a]+(tmp[b]-tmp[a])*(u-a); } }
+    }
+  }
+  return { cols, header:label, n:nOut, fs, units:unit };
+}
+
+function guessType(name){
+  const s = (name||'').toUpperCase();
+  if (/^(TIME|TEMPO|T)$/.test(s)) return 'TIME';
+  if (/ACC|ACEL/.test(s)) return 'ACC';
+  if (/TRIG|MARK|EVENT/.test(s)) return 'TRIG';
+  if (/EMG|FCR|ECR|APB|ADM|FDI|TIB|BIC|TRI|DELT|MUS/.test(s)) return 'EMG';
+  if (/^(FP|F|FC|C|CP|P|PO|O|T|TP|A)\d|^(FZ|CZ|PZ|OZ|FPZ|POZ)$/.test(s)) return 'EEG';
+  return 'EEG';
+}
+
+/* ---- pipeline de carga ---- */
+let PENDING = null;
+
+function stageColumns(cols, header, n, fs, units){
+  PENDING = { cols, header, n, fs: fs||DEFAULTS.fs, units: units||[] };
+  $('#fsIn').value = Math.round(PENDING.fs);
+  $('#nSamp').value = n.toLocaleString('pt-BR');
+  $('#durTxt').value = (n/PENDING.fs).toFixed(1)+' s';
+  const tb = $('#mapBody'); tb.innerHTML='';
+  cols.forEach((c,i)=>{
+    let mn=Infinity,mx=-Infinity;
+    const step = Math.max(1, Math.floor(n/20000));
+    for (let k=0;k<n;k+=step){ if(c[k]<mn)mn=c[k]; if(c[k]>mx)mx=c[k]; }
+    const name = header ? header[i] : ('ch'+(i+1));
+    let t = header ? guessType(name) : (i===0?'TIME':'EEG');
+    if (!header && i===0){
+      // heurística BacAv: 1ª coluna monotônica crescente = tempo
+      t = (c[1]>c[0] && c[Math.min(n-1,1000)]>c[0]) ? 'TIME' : 'EEG';
+    }
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="num mono">${i+1}</td>
+      <td><input type="text" value="${name}" data-lab="${i}"></td>
+      <td><select data-type="${i}">
+        ${['EEG','EMG','ACC','TRIG','TIME','IGN'].map(o=>`<option value="${o}"${o===t?' selected':''}>${o==='IGN'?'ignorar':o}</option>`).join('')}
+      </select></td>
+      <td><input type="text" value="${(PENDING.units[i]||'uV')}" data-unit="${i}"></td>
+      <td class="num mono">${mn.toFixed(1)} … ${mx.toFixed(1)}</td>`;
+    tb.appendChild(tr);
+  });
+  $('#panMap').classList.remove('hidden');
+  $('#mapMsg').textContent = header ? 'Rótulos lidos do cabeçalho do arquivo.' : 'Sem cabeçalho: rótulos genéricos atribuídos.';
+  $('#panMap').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+function acceptMapping(){
+  const cols = PENDING.cols;
+  const labels=[],types=[],units=[],raw=[];
+  let timeCol=-1;
+  cols.forEach((c,i)=>{
+    const t = $(`select[data-type="${i}"]`).value;
+    if (t==='TIME'){ timeCol=i; return; }
+    if (t==='IGN') return;
+    labels.push($(`input[data-lab="${i}"]`).value.trim() || ('ch'+(i+1)));
+    types.push(t);
+    units.push($(`input[data-unit="${i}"]`).value.trim() || 'uV');
+    raw.push(c);
+  });
+  if (!raw.length){ $('#mapMsg').textContent='Nenhum canal atribuído. Marque ao menos um EEG e um EMG.'; return; }
+  let fs = Number($('#fsIn').value)||DEFAULTS.fs;
+  if (timeCol>=0 && PENDING.n>10){
+    const dt = (PENDING.cols[timeCol][1000]-PENDING.cols[timeCol][0])/1000;
+    if (dt>0){ const f = 1/dt; if (Math.abs(f-fs)/fs > 0.02){ fs = Math.round(f); $('#fsIn').value=fs;
+      $('#mapMsg').textContent='Amostragem recalculada a partir da coluna de tempo: '+fs+' Hz.'; } }
+  }
+  Object.assign(DATA, { loaded:true, fs, n:PENDING.n, labels, types, units, raw,
+    proc: raw.map(c=>Float32Array.from(c)), rect:[], env:[], filtered:false });
+  MARKERS=[]; EP=null; STATS=null;
+  onDataReady();
+}
+
+function onDataReady(){
+  $('#chipData').innerHTML = `<b>${DATA.labels.length}</b> canais · <b>${(DATA.n/DATA.fs).toFixed(0)}</b> s · <b>${DATA.fs}</b> Hz`;
+  $$('#tabs button').forEach(b=>b.disabled=false);
+  // seletores dependentes
+  const emgIdx = DATA.types.map((t,i)=>t==='EMG'?i:-1).filter(i=>i>=0);
+  const eegIdx = DATA.types.map((t,i)=>t==='EEG'?i:-1).filter(i=>i>=0);
+  fillSelect('#anchorCh', emgIdx.map(i=>({v:i, t:DATA.labels[i]})));
+  fillSelect('#rerefCh', eegIdx.map(i=>({v:i, t:DATA.labels[i]})));
+  fillSelect('#anaCh', eegIdx.map(i=>({v:i, t:DATA.labels[i]})));
+  const cPref = eegIdx.find(i=>/^C3$/i.test(DATA.labels[i])) ?? eegIdx[0];
+  if (cPref!==undefined) $('#anaCh').value = cPref;
+  buildChToggles(eegIdx);
+  VIEW.reset();
+  applyFilters();
+  showTab('pre');
+  updateChips();
+}
+
+function fillSelect(sel, items){
+  const el=$(sel); el.innerHTML = items.map(o=>`<option value="${o.v}">${o.t}</option>`).join('');
+}
+
+/* ==========================================================================
+   4 · PRÉ-PROCESSAMENTO
+   ========================================================================== */
+function applyFilters(){
+  if (!DATA.loaded) return;
+  const fs = DATA.fs;
+  const eegHP=+$('#eegHP').value, eegLP=+$('#eegLP').value, eegOrd=+$('#eegOrd').value;
+  const emgHP=+$('#emgHP').value, emgLP=+$('#emgLP').value, emgOrd=+$('#emgOrd').value;
+  const nf=+$('#notchF').value, nh=+$('#notchH').value;
+  const doDetr = $('#detrendChk').checked;
+  const t0=performance.now();
+
+  const eegSecs = DSP.butterHP(eegHP,fs,eegOrd).concat(DSP.butterLP(eegLP,fs,eegOrd));
+  const emgSecs = DSP.butterHP(emgHP,fs,emgOrd).concat(DSP.butterLP(emgLP,fs,emgOrd));
+  let notchSecs=[];
+  if (nf>0) for (let h=1;h<=nh;h++) notchSecs = notchSecs.concat(DSP.notch(nf*h, fs, 30));
+
+  DATA.proc = DATA.raw.map((c,i)=>{
+    let x = doDetr ? DSP.detrend(c) : Float32Array.from(c);
+    const t = DATA.types[i];
+    if (t==='EEG'){ if (notchSecs.length) x = DSP.filtfilt(x, notchSecs); x = DSP.filtfilt(x, eegSecs); }
+    else if (t==='EMG'){ if (notchSecs.length) x = DSP.filtfilt(x, notchSecs); x = DSP.filtfilt(x, emgSecs); }
+    return x;
+  });
+
+  // re-referenciamento do EEG
+  const mode = $('#reref').value;
+  const eegIdx = DATA.types.map((t,i)=>t==='EEG'?i:-1).filter(i=>i>=0);
+  if (mode==='avg' && eegIdx.length>1){
+    const ref = new Float32Array(DATA.n);
+    for (const i of eegIdx) for (let k=0;k<DATA.n;k++) ref[k]+=DATA.proc[i][k];
+    for (let k=0;k<DATA.n;k++) ref[k]/=eegIdx.length;
+    for (const i of eegIdx){ const x=DATA.proc[i]; for(let k=0;k<DATA.n;k++) x[k]-=ref[k]; }
+  } else if (mode==='ch'){
+    const r = +$('#rerefCh').value;
+    if (DATA.proc[r]){ const ref=Float32Array.from(DATA.proc[r]);
+      for (const i of eegIdx){ const x=DATA.proc[i]; for(let k=0;k<DATA.n;k++) x[k]-=ref[k]; } }
+  }
+
+  // EMG: retificação e envelope para o detector
+  DATA.rect = []; DATA.env = [];
+  const envMode=$('#envMode').value, envWin=+$('#envWin').value;
+  DATA.proc.forEach((x,i)=>{
+    if (DATA.types[i]!=='EMG'){ DATA.rect[i]=null; DATA.env[i]=null; return; }
+    const r = DSP.rectify(x);
+    DATA.rect[i]=r;
+    let e = r;
+    if (envMode==='rms') e = DSP.movRMS(x, Math.max(1,Math.round(envWin*fs/1000)));
+    else if (envMode==='lp') e = DSP.filtfilt(r, DSP.butterLP(Math.max(1,envWin), fs, 2));
+    DATA.env[i] = DSP.normalize(DSP.rectify(e));
+  });
+
+  DATA.filtered = true;
+  PARAMS.filters = { eegHP,eegLP,eegOrd,emgHP,emgLP,emgOrd,notch:nf,harm:nh,detrend:doDetr,reref:mode,envMode,envWin };
+  $('#filtMsg').textContent = `Filtros aplicados em ${((performance.now()-t0)/1000).toFixed(2)} s. Fase zero verificada.`;
+  if (eegHP>0 && eegHP/fs < DEFAULTS.HP_BIQUAD_MIN_RATIO)
+    $('#filtMsg').textContent += ` Passa-altas de ${eegHP} Hz: seções RC de 1ª ordem para estabilidade numérica. `+
+      `A constante de tempo é de ${(1/(2*Math.PI*eegHP)).toFixed(0)} s — descarte os primeiros segundos do registro.`;
+  syncLead();
+  VIEW.draw();
+}
+
+/* ==========================================================================
+   5 · VISUALIZADOR DE TRAÇADO
+   ========================================================================== */
+const VIEW = {
+  cv:null, ctx:null, t0:0, dur:10, drag:null, host:null,
+  init(){
+    const wrap = document.createElement('div');
+    wrap.id='viewerWrap';
+    wrap.innerHTML = `<div class="canvas-tools">
+        <button class="sm" id="vZoomOut">−</button><button class="sm" id="vZoomIn">+</button>
+        <span class="mono" id="vRange" style="min-width:190px;color:var(--ink-soft)"></span>
+        <label class="f" style="margin:0">Ganho EEG</label><input type="number" id="vGainE" value="100" step="10" style="width:78px">
+        <label class="f" style="margin:0">Ganho EMG</label><input type="number" id="vGainM" value="300" step="50" style="width:78px">
+        <div class="inline" style="margin-left:8px"><input type="checkbox" id="vRaw"><label for="vRaw">mostrar bruto</label></div>
+      </div>
+      <canvas id="cvView" height="440"></canvas>
+      <div class="note" style="margin-top:6px">Traço azul: sinal processado. Cinza: sinal bruto, quando exibido. Barras verticais vermelhas: marcadores de início de abalo.</div>`;
+    this.cv = wrap.querySelector('#cvView');
+    this.ctx = this.cv.getContext('2d');
+    this.wrap = wrap;
+    wrap.querySelector('#vZoomIn').onclick = ()=>{ this.dur=Math.max(0.2,this.dur/1.6); this.draw(); };
+    wrap.querySelector('#vZoomOut').onclick= ()=>{ this.dur=Math.min(DATA.n/DATA.fs,this.dur*1.6); this.draw(); };
+    wrap.querySelector('#vGainE').oninput = ()=>this.draw();
+    wrap.querySelector('#vGainM').oninput = ()=>this.draw();
+    wrap.querySelector('#vRaw').onchange  = ()=>this.draw();
+
+    this.cv.addEventListener('wheel', e=>{
+      e.preventDefault();
+      const r=this.cv.getBoundingClientRect(), frac=(e.clientX-r.left)/r.width;
+      const tAt=this.t0+frac*this.dur;
+      this.dur = Math.max(0.15, Math.min(DATA.n/DATA.fs, this.dur*(e.deltaY>0?1.25:0.8)));
+      this.t0 = Math.max(0, Math.min(DATA.n/DATA.fs-this.dur, tAt-frac*this.dur));
+      this.draw();
+    }, {passive:false});
+    this.cv.addEventListener('pointerdown', e=>{
+      if ($('#manualMode') && $('#manualMode').checked){ this.manualClick(e); return; }
+      this.drag={x:e.clientX, t0:this.t0}; this.cv.setPointerCapture(e.pointerId);
+    });
+    this.cv.addEventListener('pointermove', e=>{
+      if (!this.drag) return;
+      const r=this.cv.getBoundingClientRect();
+      const dt=(e.clientX-this.drag.x)/r.width*this.dur;
+      this.t0=Math.max(0,Math.min(DATA.n/DATA.fs-this.dur, this.drag.t0-dt));
+      this.draw();
+    });
+    this.cv.addEventListener('pointerup', ()=>{ this.drag=null; });
+    window.addEventListener('resize', ()=>this.draw());
+  },
+  manualClick(e){
+    const r=this.cv.getBoundingClientRect();
+    const t = this.t0 + (e.clientX-r.left)/r.width*this.dur;
+    const s = t*DATA.fs;
+    if (e.altKey){
+      let bi=-1, bd=Infinity;
+      MARKERS.forEach((m,i)=>{ const d=Math.abs(m-s); if(d<bd){bd=d;bi=i;} });
+      if (bi>=0 && bd < 0.02*DATA.fs*Math.max(1,this.dur)) MARKERS.splice(bi,1);
+    } else {
+      const ai = +$('#anchorCh').value;
+      MARKERS.push(s);
+      MARKERS.sort((a,b)=>a-b);
+    }
+    updateChips(); this.draw();
+  },
+  reset(){ this.t0=0; this.dur=Math.min(10, DATA.n/DATA.fs); },
+  mount(hostId){
+    if (!this.wrap) this.init();
+    const h=$(hostId); if (h && this.wrap.parentElement!==h){ h.appendChild(this.wrap); }
+    this.draw();
+  },
+  draw(){
+    if (!this.cv || !DATA.loaded) return;
+    const cv=this.cv, ctx=this.ctx;
+    const W=cv.clientWidth||900, H=cv.height;
+    if (cv.width!==Math.round(W*devicePixelRatio)){ cv.width=Math.round(W*devicePixelRatio); }
+    ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+    const cs=getComputedStyle(document.body);
+    const C = k=>cs.getPropertyValue(k).trim();
+    ctx.clearRect(0,0,W,H);
+    const gutter=62, pad=8;
+    const nch=DATA.labels.length;
+    const rowH=(H-2*pad)/nch;
+    const s0=Math.max(0,Math.floor(this.t0*DATA.fs)), s1=Math.min(DATA.n,Math.ceil((this.t0+this.dur)*DATA.fs));
+    const spp=(s1-s0)/(W-gutter);
+    const gE=+this.wrap.querySelector('#vGainE').value||100;
+    const gM=+this.wrap.querySelector('#vGainM').value||300;
+    const showRaw=this.wrap.querySelector('#vRaw').checked;
+    this.wrap.querySelector('#vRange').textContent = `${this.t0.toFixed(2)}–${(this.t0+this.dur).toFixed(2)} s`;
+
+    // grade temporal
+    ctx.strokeStyle=C('--grid'); ctx.lineWidth=1;
+    const stepT=niceStep(this.dur/8);
+    ctx.font='10px ui-monospace,monospace'; ctx.fillStyle=C('--ink-soft');
+    for (let t=Math.ceil(this.t0/stepT)*stepT; t<this.t0+this.dur; t+=stepT){
+      const x=gutter+(t-this.t0)/this.dur*(W-gutter);
+      ctx.beginPath(); ctx.moveTo(x,pad); ctx.lineTo(x,H-pad); ctx.stroke();
+      ctx.fillText(t.toFixed(stepT<1?2:1)+'s', x+3, H-pad-2);
+    }
+
+    for (let c=0;c<nch;c++){
+      const yc=pad+rowH*(c+0.5);
+      const isEMG=DATA.types[c]==='EMG';
+      const gain=(rowH*0.42)/(isEMG?gM:gE);
+      ctx.strokeStyle=C('--grid'); ctx.beginPath(); ctx.moveTo(gutter,yc); ctx.lineTo(W,yc); ctx.stroke();
+      if (showRaw) drawTrace(ctx,DATA.raw[c],s0,s1,gutter,W,yc,gain,spp,C('--rule'));
+      drawTrace(ctx,DATA.proc[c],s0,s1,gutter,W,yc,gain,spp, isEMG?C('--trace-2'):C('--trace'));
+      ctx.fillStyle=C('--ink'); ctx.font='600 11px ui-sans-serif,sans-serif';
+      ctx.fillText(DATA.labels[c], 6, yc+3);
+      ctx.fillStyle=C('--ink-soft'); ctx.font='9px ui-monospace,monospace';
+      ctx.fillText(isEMG?gM+'µV':gE+'µV', 6, yc+14);
+    }
+    // marcadores
+    ctx.strokeStyle=C('--mark'); ctx.lineWidth=1;
+    for (const m of MARKERS){
+      if (m<s0||m>s1) continue;
+      const x=gutter+(m-s0)/(s1-s0)*(W-gutter);
+      ctx.globalAlpha=.75; ctx.beginPath(); ctx.moveTo(x,pad); ctx.lineTo(x,H-pad); ctx.stroke(); ctx.globalAlpha=1;
+    }
+  }
+};
+function drawTrace(ctx,data,s0,s1,x0,W,yc,gain,spp,color){
+  if (!data) return;
+  ctx.strokeStyle=color; ctx.lineWidth=1; ctx.beginPath();
+  const px=W-x0;
+  if (spp>2){
+    for (let p=0;p<px;p++){
+      const a=s0+Math.floor(p*spp), b=Math.min(s1,s0+Math.floor((p+1)*spp));
+      let mn=Infinity,mx=-Infinity;
+      for (let i=a;i<b;i++){ const v=data[i]; if(v<mn)mn=v; if(v>mx)mx=v; }
+      if (mn===Infinity) continue;
+      const x=x0+p;
+      ctx.moveTo(x, yc-mx*gain); ctx.lineTo(x, yc-mn*gain);
+    }
+  } else {
+    let first=true;
+    for (let i=s0;i<s1;i++){
+      const x=x0+(i-s0)/(s1-s0)*px, y=yc-data[i]*gain;
+      if (first){ ctx.moveTo(x,y); first=false; } else ctx.lineTo(x,y);
+    }
+  }
+  ctx.stroke();
+}
+function niceStep(v){ const p=Math.pow(10,Math.floor(Math.log10(v))); const m=v/p;
+  return (m<1.5?1:m<3.5?2:m<7.5?5:10)*p; }
+
+/* ==========================================================================
+   6 · DETECÇÃO DE ABALOS
+   ========================================================================== */
+/* Compensação do atraso do envelope.
+   Uma janela de suavização centrada de largura W faz o limiar ser cruzado
+   W/2 antes do início real do burst. Sem compensar, mudar apenas o ajuste do
+   envelope desloca a latência relatada: medido no dado sintético, RMS de
+   10→40 ms moveu o pico de −24 para −9 ms. Compensando, o valor fica
+   constante para qualquer W. */
+function envelopeLeadSamples(){
+  const mode=$('#envMode').value, w=+$('#envWin').value, fs=DATA.fs;
+  if (mode==='rms') return Math.round(w*fs/1000/2);
+  if (mode==='lp')  return Math.round(0.25/Math.max(1,w)*fs);
+  return 0;
+}
+function syncLead(){
+  if ($('#autoLead').checked) $('#leadComp').value = Math.round(envelopeLeadSamples()/DATA.fs*1000);
+}
+/* Realinhamento por correlação cruzada do EMG retificado contra o modelo médio.
+   Reduz o jitter; é cego ao viés absoluto e não o corrige. */
+function xcorrRealign(marks, maxShiftMs=25, iters=3){
+  const fs=DATA.fs, ai=+$('#anchorCh').value, rect=DATA.rect[ai];
+  if (!rect) return marks;
+  const pre=Math.round(0.2*fs), post=Math.round(0.2*fs), L=pre+post+1;
+  const mx=Math.round(maxShiftMs*fs/1000);
+  let tpl=new Float64Array(L);
+  const acc=(arr,m)=>{ const a=Math.round(m)-pre; if(a<0||a+L>=DATA.n) return false;
+    for(let k=0;k<L;k++) arr[k]+=rect[a+k]; return true; };
+  for (const m of marks) acc(tpl,m);
+  for (let it=0; it<iters; it++){
+    const out=[], nt=new Float64Array(L);
+    for (const m of marks){
+      const c=Math.round(m); let best=0, bv=-Infinity;
+      for (let d=-mx; d<=mx; d++){
+        const a=c+d-pre; if (a<0||a+L>=DATA.n) continue;
+        let dot=0; for (let k=0;k<L;k++) dot+=tpl[k]*rect[a+k];
+        if (dot>bv){ bv=dot; best=d; }
+      }
+      out.push(m+best); acc(nt, m+best);
+    }
+    marks=out; tpl=nt;
+  }
+  return marks;
+}
+
+function detectBacAv(env, p){
+  const fs=DATA.fs, n=env.length, out=[];
+  const nb=Math.round(p.tb*fs), na=Math.round(p.ta*fs), nbd=Math.round(p.bd*fs);
+  let i=nb+1, lastMk=-1e9;
+  // somas acumuladas para médias rápidas
+  const cs=new Float64Array(n+1);
+  for (let k=0;k<n;k++) cs[k+1]=cs[k]+env[k];
+  const meanRange=(a,b)=> (b<=a)?0:(cs[Math.min(n,b)]-cs[Math.max(0,a)])/(Math.min(n,b)-Math.max(0,a));
+  while (i<n-na){
+    if (env[i]>p.thr && i-lastMk>nbd){
+      const mb=meanRange(i-nb,i), ma=meanRange(i,i+na);
+      if (mb < p.ab && ma > p.aa){
+        out.push(i);
+        lastMk=i; i+=nbd; continue;
+      }
+    }
+    i++;
+  }
+  return out;
+}
+
+function detectSD(env, k, winMs, bdS, minMs){
+  const fs=DATA.fs, sm=DSP.movMean(env, Math.max(1,Math.round(winMs*fs/1000)));
+  // linha de base robusta: quartil inferior
+  const samp=[]; const step=Math.max(1,Math.floor(sm.length/50000));
+  for (let i=0;i<sm.length;i+=step) samp.push(sm[i]);
+  samp.sort((a,b)=>a-b);
+  const med=DSP.percentile(samp,0.5);
+  const q1=DSP.percentile(samp,0.25), q3=DSP.percentile(samp,0.75);
+  const sd=(q3-q1)/1.349 || 1e-6;
+  const thr=med + k*sd;
+  const nbd=Math.round(bdS*fs), nmin=Math.round(minMs*fs/1000);
+  const out=[]; let i=1, last=-1e9;
+  while (i<sm.length-nmin){
+    if (sm[i]>thr && i-last>nbd){
+      let ok=true; for (let j=i;j<i+nmin;j++) if (sm[j]<=thr){ ok=false; break; }
+      if (ok){ out.push(i); last=i; i+=nbd; continue; }
+    }
+    i++;
+  }
+  return out;
+}
+
+function detectTKEO(sig, k, winMs, bdS){
+  const fs=DATA.fs;
+  const psi=DSP.tkeo(sig);
+  const sm=DSP.movMean(psi, Math.max(1,Math.round(winMs*fs/1000)));
+  const nrm=DSP.normalize(sm);
+  const samp=[]; const step=Math.max(1,Math.floor(nrm.length/50000));
+  for (let i=0;i<nrm.length;i+=step) samp.push(nrm[i]);
+  samp.sort((a,b)=>a-b);
+  const med=DSP.percentile(samp,0.5);
+  const q3=DSP.percentile(samp,0.75), q1=DSP.percentile(samp,0.25);
+  const sd=(q3-q1)/1.349 || 1e-6;
+  const thr=med+k*sd, nbd=Math.round(bdS*fs);
+  const out=[]; let i=1,last=-1e9;
+  while (i<nrm.length-2){
+    if (nrm[i]>thr && i-last>nbd){ out.push(i); last=i; i+=nbd; continue; }
+    i++;
+  }
+  return out;
+}
+
+function runDetect(){
+  if (!DATA.filtered) applyFilters();
+  const ai=+$('#anchorCh').value;
+  const algo=$('#algo').value;
+  if (algo==='manual'){ $('#detMsg').textContent='Modo manual: marque no traçado.'; $('#manualMode').checked=true; return; }
+  const env=DATA.env[ai];
+  if (!env){ $('#detMsg').textContent='Selecione um canal EMG válido.'; return; }
+  let mk=[];
+  if (algo==='bacav'){
+    const p={thr:+$('#pThr').value, tb:+$('#pTb').value, ab:+$('#pAb').value,
+             ta:+$('#pTa').value, aa:+$('#pAa').value, bd:+$('#pBd').value};
+    mk=detectBacAv(env,p); PARAMS.detect={algo,...p};
+  } else if (algo==='sd'){
+    mk=detectSD(env, +$('#sdK').value, +$('#sdWin').value, +$('#sdBd').value, +$('#sdMin').value);
+    PARAMS.detect={algo,k:+$('#sdK').value,win:+$('#sdWin').value,bd:+$('#sdBd').value,min:+$('#sdMin').value};
+  } else {
+    mk=detectTKEO(DATA.proc[ai], +$('#tkK').value, +$('#tkWin').value, +$('#tkBd').value);
+    PARAMS.detect={algo,k:+$('#tkK').value,win:+$('#tkWin').value,bd:+$('#tkBd').value};
+  }
+  PARAMS.anchor = DATA.labels[ai];
+  syncLead();
+  const lead = Math.round(+$('#leadComp').value*DATA.fs/1000);
+  mk = mk.map(i=>i+lead);
+  if ($('#xcorrAlign').checked){ MARKERS=mk; mk = xcorrRealign(mk); }
+  PARAMS.detect.leadCompMs = +$('#leadComp').value;
+  PARAMS.detect.xcorr = $('#xcorrAlign').checked;
+  MARKERS = mk;
+  EP=null; STATS=null;
+  updateChips();
+  const isi = MARKERS.length>1 ? MARKERS.slice(1).map((m,i)=>(m-MARKERS[i])/DATA.fs) : [];
+  $('#detMsg').textContent = `${MARKERS.length} abalos · intervalo mediano ${isi.length?DSP.median(isi).toFixed(2):'—'} s · compensação ${$('#leadComp').value} ms`;
+  $('#detTip').innerHTML = tipFor(MARKERS.length, isi);
+  VIEW.draw();
+}
+function tipFor(n, isi){
+  const bits=[];
+  if (n===0) bits.push('Nenhum burst marcado. Reduza o <b>Limiar</b> ou o critério <b>Amplitude depois</b>.');
+  else if (n<20) bits.push('Menos de 20 abalos: abaixo do mínimo prático para revelar um transiente com segurança. Reduza o <b>Limiar</b> ou registre mais eventos.');
+  else if (n<40) bits.push('Entre 20 e 40 abalos: suficiente para uma primeira média, insuficiente para dividir em duas metades com conforto. O alvo prático é 40–50.');
+  else bits.push('Número adequado: permite dividir a amostra e verificar a persistência da onda.');
+  if (isi.length){
+    const short = isi.filter(v=>v<0.25).length;
+    if (short > isi.length*0.1) bits.push('Vários intervalos abaixo de 250 ms sugerem marcação dupla do mesmo burst — aumente a <b>Duração do burst</b>.');
+  }
+  return bits.join(' ');
+}
+
+/* ==========================================================================
+   7 · SEGMENTAÇÃO E MÉDIA
+   ========================================================================== */
+function buildEpochs(){
+  if (!MARKERS.length){ $('#avgMsg').textContent='Nenhum marcador. Volte à etapa de detecção.'; return null; }
+  const fs=DATA.fs;
+  const pre=Math.round(+$('#epPre').value*fs/1000);
+  const post=Math.round(+$('#epPost').value*fs/1000);
+  const L=pre+post+1;
+  const blA=+$('#blA').value, blB=+$('#blB').value;
+  const iA=Math.max(0, Math.round(pre + blA*fs/1000)), iB=Math.min(L-1, Math.round(pre + blB*fs/1000));
+  const blMode=$('#blMode').value;
+  const ppRej=+$('#ppRej').value, emgRej=+$('#blEmgRej').value;
+  const ai=+$('#anchorCh').value;
+  const eegIdx=DATA.types.map((t,i)=>t==='EEG'?i:-1).filter(i=>i>=0);
+
+  const kept=[], rejected=[], data=[];
+  for (const m of MARKERS){
+    const c=Math.round(m), a=c-pre, b=c+post;
+    if (a<0 || b>=DATA.n){ rejected.push({t:m/fs, why:'fora do registro'}); continue; }
+    const seg = DATA.labels.map((_,ch)=>{
+      const src = DATA.types[ch]==='EMG' ? DATA.rect[ch] : DATA.proc[ch];
+      const o=new Float32Array(L);
+      for (let k=0;k<L;k++) o[k]=src[a+k];
+      return o;
+    });
+    // correção de linha de base
+    if (blMode!=='none'){
+      for (let ch=0;ch<seg.length;ch++){
+        if (DATA.types[ch]==='EMG') continue;
+        const x=seg[ch];
+        if (blMode==='mean'){
+          let s=0; for(let k=iA;k<=iB;k++) s+=x[k];
+          const mu=s/Math.max(1,iB-iA+1);
+          for (let k=0;k<L;k++) x[k]-=mu;
+        } else {
+          let sx=0,sy=0,sxx=0,sxy=0,cnt=0;
+          for (let k=iA;k<=iB;k++){ sx+=k; sy+=x[k]; sxx+=k*k; sxy+=k*x[k]; cnt++; }
+          const den=cnt*sxx-sx*sx, bb=den?(cnt*sxy-sx*sy)/den:0, aa=(sy-bb*sx)/cnt;
+          for (let k=0;k<L;k++) x[k]-=(aa+bb*k);
+        }
+      }
+    }
+    // rejeição
+    let bad=null;
+    if (ppRej>0){
+      for (const ch of eegIdx){
+        let mn=Infinity,mx=-Infinity; const x=seg[ch];
+        for (let k=0;k<L;k++){ if(x[k]<mn)mn=x[k]; if(x[k]>mx)mx=x[k]; }
+        if (mx-mn>ppRej){ bad='pico-a-pico '+(mx-mn).toFixed(0)+' µV em '+DATA.labels[ch]; break; }
+      }
+    }
+    if (!bad && emgRej>0 && DATA.env[ai]){
+      let s=0,cnt=0;
+      for (let k=iA;k<=iB;k++){ const idx=a+k; if(idx>=0&&idx<DATA.n){ s+=DATA.env[ai][idx]; cnt++; } }
+      if (cnt && s/cnt > emgRej) bad='EMG ativo na linha de base (abalo sobreposto)';
+    }
+    if (bad) rejected.push({t:m/fs, why:bad});
+    else { kept.push(m); data.push(seg); }
+  }
+  if (!data.length){ $('#avgMsg').textContent='Todas as épocas foram rejeitadas. Afrouxe os critérios.'; return null; }
+
+  const time=new Float32Array(L);
+  for (let k=0;k<L;k++) time[k]=(k-pre)/fs*1000;
+  PARAMS.epoch={pre:+$('#epPre').value, post:+$('#epPost').value, blA, blB, blMode, ppRej, emgRej, estimator:$('#avgMode').value};
+  return { L, pre, post, time, kept, rejected, data, iA, iB };
+}
+
+function estimate(vals, mode){
+  const n=vals.length;
+  if (mode==='median'){ const s=Array.from(vals).sort((a,b)=>a-b); return DSP.percentile(s,0.5); }
+  if (mode==='trim'){
+    const s=Array.from(vals).sort((a,b)=>a-b);
+    const c=Math.floor(n*0.2); let sum=0,k=0;
+    for (let i=c;i<n-c;i++){ sum+=s[i]; k++; }
+    return k?sum/k:0;
+  }
+  let s=0; for (let i=0;i<n;i++) s+=vals[i]; return s/n;
+}
+
+function computeAverage(){
+  const ep=buildEpochs();
+  if (!ep) return;
+  const mode=$('#avgMode').value;
+  const nch=DATA.labels.length, L=ep.L, N=ep.data.length;
+  const mean=[], sem=[];
+  const buf=new Float64Array(N);
+  for (let ch=0;ch<nch;ch++){
+    const m=new Float32Array(L), e=new Float32Array(L);
+    for (let k=0;k<L;k++){
+      for (let i=0;i<N;i++) buf[i]=ep.data[i][ch][k];
+      const mu=estimate(buf,mode);
+      m[k]=mu;
+      let v=0; for (let i=0;i<N;i++){ const d=buf[i]-mu; v+=d*d; }
+      e[k]=Math.sqrt(v/Math.max(1,N-1))/Math.sqrt(N);
+    }
+    mean.push(m); sem.push(e);
+  }
+  EP={...ep, mean, sem, N, timeMk:ep.time};
+  applyZeroReference();
+  EP.jitter = measureJitter();
+  STATS=null;
+  $('#avgMsg').textContent = `${N} épocas aceitas · ${ep.rejected.length} rejeitadas`;
+  renderAvgStat(); drawAverage(); drawRaster(); renderMuscleTable(); computePeaks();
+  return EP;
+}
+
+/* Referência temporal.
+   O marcador cai onde o EMG cruza o limiar, sempre alguns ms após o início
+   real do burst, e esse atraso muda com o limiar escolhido. Referenciar t=0
+   ao início do EMG retificado médio remove essa dependência: no dado
+   sintético, a latência relatada ficou em −24 ms para limiares de 0,15 a 0,50,
+   enquanto a referência ao marcador oscilou de −27 a −34 ms. */
+function applyZeroReference(){
+  const L=EP.L, ai=+$('#anchorCh').value;
+  let shift=0;
+  if ($('#t0mode').value==='emg' && EP.mean[ai]){
+    const m=EP.mean[ai];
+    let base=0,c=0; for(let k=EP.iA;k<=EP.iB;k++){ base+=m[k]; c++; } base/=Math.max(1,c);
+    let pk=0,pi=EP.pre;
+    const lo=Math.max(0,EP.pre-Math.round(0.12*DATA.fs)), hi=Math.min(L-1,EP.pre+Math.round(0.2*DATA.fs));
+    for (let k=lo;k<=hi;k++) if (m[k]>pk){ pk=m[k]; pi=k; }
+    const frac=Math.max(0.02,Math.min(0.5,(+$('#zeroFrac').value||20)/100));
+    const th=base+(pk-base)*frac;
+    let z=pi; while (z>0 && m[z]>th) z--;
+    if (z<pi && m[z+1]!==m[z]){ const f=(th-m[z])/(m[z+1]-m[z]); shift = EP.timeMk[z] + f/DATA.fs*1000; }
+    else shift = EP.timeMk[z];
+  }
+  EP.zeroShiftMs = shift;
+  const t=new Float32Array(L);
+  for (let k=0;k<L;k++) t[k]=EP.timeMk[k]-shift;
+  EP.time=t;
+  let zi=0, bd=Infinity;
+  for (let k=0;k<L;k++){ const d=Math.abs(t[k]); if (d<bd){ bd=d; zi=k; } }
+  EP.zeroIdx=zi;
+}
+
+/* Jitter do alinhamento: deslocamento que maximiza a correlação entre o EMG
+   retificado de cada época e o modelo médio. É o principal determinante do
+   borramento do transiente cortical. */
+function measureJitter(){
+  const ai=+$('#anchorCh').value;
+  if (!EP.mean[ai] || EP.N<3) return NaN;
+  const tpl=EP.mean[ai], L=EP.L;
+  const a=Math.max(0,EP.pre-Math.round(0.2*DATA.fs)), b=Math.min(L-1,EP.pre+Math.round(0.2*DATA.fs));
+  const mx=Math.round(0.025*DATA.fs), sh=[];
+  for (let i=0;i<EP.N;i++){
+    const x=EP.data[i][ai]; let best=0,bv=-Infinity;
+    for (let d=-mx; d<=mx; d++){
+      let dot=0;
+      for (let k=a;k<=b;k++){ const j=k+d; if (j<0||j>=L) continue; dot+=tpl[k]*x[j]; }
+      if (dot>bv){ bv=dot; best=d; }
+    }
+    sh.push(best/DATA.fs*1000);
+  }
+  const mu=sh.reduce((p,q)=>p+q,0)/sh.length;
+  return Math.sqrt(sh.reduce((p,q)=>p+(q-mu)*(q-mu),0)/Math.max(1,sh.length-1));
+}
+
+function renderAvgStat(){
+  const isi = EP.kept.length>1 ? EP.kept.slice(1).map((m,i)=>(m-EP.kept[i])/DATA.fs) : [];
+  const bd = emgBurstDuration();
+  $('#avgStat').innerHTML = `
+    <div><div class="k">Épocas</div><div class="v">${EP.N}<small> / ${MARKERS.length}</small></div></div>
+    <div><div class="k">Rejeitadas</div><div class="v">${EP.rejected.length}</div></div>
+    <div><div class="k">Intervalo mediano</div><div class="v">${isi.length?DSP.median(isi).toFixed(2):'—'}<small> s</small></div></div>
+    <div><div class="k">Duração do burst</div><div class="v">${fmt(bd,0)}<small> ms</small></div></div>
+    <div><div class="k">Jitter do alinhamento</div><div class="v">${fmt(EP.jitter,1)}<small> ms DP</small></div></div>
+    <div><div class="k">t = 0</div><div class="v" style="font-size:14px">${$('#t0mode').value==='emg'?'início do EMG':'marcador'}<small><br>desloc. ${fmt(EP.zeroShiftMs,1)} ms</small></div></div>`;
+}
+
+function emgBurstDuration(){
+  const ai=+$('#anchorCh').value;
+  const m=EP.mean[ai]; if(!m) return NaN;
+  const i0=EP.zeroIdx!==undefined?EP.zeroIdx:EP.pre;
+  let base=0,cnt=0;
+  for (let k=EP.iA;k<=EP.iB;k++){ base+=m[k]; cnt++; }
+  base/=Math.max(1,cnt);
+  let pk=0,pi=i0;
+  for (let k=i0;k<Math.min(EP.L,i0+Math.round(0.3*DATA.fs));k++) if (m[k]>pk){pk=m[k];pi=k;}
+  const th=base+(pk-base)*0.2;
+  let a=pi; while(a>0 && m[a]>th) a--;
+  let b=pi; while(b<EP.L-1 && m[b]>th) b++;
+  return (b-a)/DATA.fs*1000;
+}
+
+/* ---- desenho da média ---- */
+function buildChToggles(eegIdx){
+  const host=$('#chToggles'); host.innerHTML='';
+  eegIdx.forEach((i,k)=>{
+    const id='tg'+i;
+    const on = k<3 || /^(C3|C4|CZ)$/i.test(DATA.labels[i]);
+    host.insertAdjacentHTML('beforeend',
+      `<span class="inline"><input type="checkbox" id="${id}" data-ch="${i}" ${on?'checked':''}><label for="${id}">${DATA.labels[i]}</label></span>`);
+  });
+  host.querySelectorAll('input').forEach(el=>el.onchange=()=>drawAverage());
+}
+function selectedEEG(){
+  return Array.from($('#chToggles').querySelectorAll('input:checked')).map(el=>+el.dataset.ch);
+}
+function plotFrame(ctx,W,H,C,pad){
+  ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle=C('--rule'); ctx.lineWidth=1;
+  ctx.strokeRect(pad.l+.5,pad.t+.5,W-pad.l-pad.r,H-pad.t-pad.b);
+}
+function xMap(t,pad,W){ const t0=EP.time[0], t1=EP.time[EP.time.length-1];
+  return pad.l + (t-t0)/(t1-t0)*(W-pad.l-pad.r); }
+
+function drawAverage(){
+  if (!EP) return;
+  const cv=$('#cvAvg'), ctx=cv.getContext('2d');
+  const W=cv.clientWidth||900, H=cv.height;
+  cv.width=Math.round(W*devicePixelRatio);
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  const cs=getComputedStyle(document.body), C=k=>cs.getPropertyValue(k).trim();
+  const pad={l:56,r:14,t:14,b:34};
+  plotFrame(ctx,W,H,C,pad);
+  const eegH=(H-pad.t-pad.b)*0.68, emgH=(H-pad.t-pad.b)*0.32;
+  const eegY=pad.t+eegH/2, emgY=pad.t+eegH+emgH-6;
+  const chs = $('#showBfly').checked ? DATA.types.map((t,i)=>t==='EEG'?i:-1).filter(i=>i>=0) : selectedEEG();
+  const ana=+$('#anaCh').value;
+  const negUp=$('#negUp').checked;
+
+  // escala EEG
+  let mx=1;
+  for (const ch of chs){ const m=EP.mean[ch]; for(let k=0;k<EP.L;k++){ const v=Math.abs(m[k])+(($('#showSEM').checked)?EP.sem[ch][k]:0); if(v>mx)mx=v; } }
+  const fixed=+$('#avgGain').value; if (fixed>0) mx=fixed;
+  const gy = (eegH/2*0.9)/mx;
+
+  // grade
+  ctx.strokeStyle=C('--grid'); ctx.font='10px ui-monospace,monospace'; ctx.fillStyle=C('--ink-soft');
+  const t0=EP.time[0], t1=EP.time[EP.time.length-1];
+  const st=niceStep((t1-t0)/9);
+  for (let t=Math.ceil(t0/st)*st;t<=t1;t+=st){
+    const x=xMap(t,pad,W);
+    ctx.beginPath(); ctx.moveTo(x,pad.t); ctx.lineTo(x,H-pad.b); ctx.stroke();
+    ctx.textAlign='center'; ctx.fillText(t.toFixed(0), x, H-pad.b+14);
+  }
+  ctx.textAlign='center'; ctx.fillText('ms em relação ao início do EMG', (pad.l+W-pad.r)/2, H-6);
+  // escala vertical
+  ctx.textAlign='right';
+  const uStep=niceStep(mx/2.2);
+  for (let u=-Math.floor(mx/uStep)*uStep; u<=mx; u+=uStep){
+    const y=eegY-(negUp?-u:u)*gy;
+    ctx.strokeStyle=C('--grid'); ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(W-pad.r,y); ctx.stroke();
+    ctx.fillStyle=C('--ink-soft'); ctx.fillText(u.toFixed(uStep<1?1:0), pad.l-5, y+3);
+  }
+  ctx.save(); ctx.translate(13,eegY); ctx.rotate(-Math.PI/2); ctx.textAlign='center';
+  ctx.fillText('µV'+(negUp?'  (neg ↑)':''),0,0); ctx.restore();
+
+  // traços EEG
+  for (const ch of chs){
+    const isAna = ch===ana;
+    if ($('#showSEM').checked && isAna){
+      ctx.fillStyle=C('--trace'); ctx.globalAlpha=.16; ctx.beginPath();
+      for (let k=0;k<EP.L;k++){ const v=EP.mean[ch][k]+EP.sem[ch][k]; const y=eegY-(negUp?-v:v)*gy;
+        const x=xMap(EP.time[k],pad,W); k?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+      for (let k=EP.L-1;k>=0;k--){ const v=EP.mean[ch][k]-EP.sem[ch][k]; const y=eegY-(negUp?-v:v)*gy;
+        ctx.lineTo(xMap(EP.time[k],pad,W),y); }
+      ctx.closePath(); ctx.fill(); ctx.globalAlpha=1;
+    }
+    ctx.strokeStyle=isAna?C('--trace'):C('--ink-soft');
+    ctx.lineWidth=isAna?1.8:1; ctx.globalAlpha=isAna?1:.55;
+    ctx.beginPath();
+    for (let k=0;k<EP.L;k++){ const v=EP.mean[ch][k]; const y=eegY-(negUp?-v:v)*gy;
+      const x=xMap(EP.time[k],pad,W); k?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+    ctx.stroke(); ctx.globalAlpha=1;
+    if (isAna){ ctx.fillStyle=C('--trace'); ctx.textAlign='left'; ctx.font='600 11px ui-sans-serif,sans-serif';
+      ctx.fillText(DATA.labels[ch], pad.l+5, pad.t+13); }
+  }
+
+  // EMG médio
+  const emgIdx=DATA.types.map((t,i)=>t==='EMG'?i:-1).filter(i=>i>=0);
+  let emx=1e-6;
+  for (const ch of emgIdx){ const m=EP.mean[ch]; for(let k=0;k<EP.L;k++) if(m[k]>emx) emx=m[k]; }
+  const eg=(emgH*0.82)/emx;
+  emgIdx.forEach((ch,j)=>{
+    ctx.strokeStyle=C('--trace-2'); ctx.lineWidth=j===0?1.6:1; ctx.globalAlpha=j===0?1:.45;
+    ctx.beginPath();
+    for (let k=0;k<EP.L;k++){ const y=emgY-EP.mean[ch][k]*eg; const x=xMap(EP.time[k],pad,W); k?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+    ctx.stroke(); ctx.globalAlpha=1;
+  });
+  ctx.fillStyle=C('--trace-2'); ctx.textAlign='left'; ctx.font='600 11px ui-sans-serif,sans-serif';
+  ctx.fillText('EMG retificado · '+emgIdx.map(i=>DATA.labels[i]).join(', '), pad.l+5, pad.t+eegH+13);
+
+  // t = 0
+  const x0=xMap(0,pad,W);
+  ctx.strokeStyle=C('--mark'); ctx.lineWidth=1.2; ctx.setLineDash([4,3]);
+  ctx.beginPath(); ctx.moveTo(x0,pad.t); ctx.lineTo(x0,H-pad.b); ctx.stroke(); ctx.setLineDash([]);
+
+  // picos
+  if (EP.peaks){
+    for (const p of [EP.peaks.pos, EP.peaks.neg]){
+      if (!p) continue;
+      const x=xMap(p.t,pad,W), y=eegY-(negUp?-p.v:p.v)*gy;
+      ctx.fillStyle=C('--mark'); ctx.beginPath(); ctx.arc(x,y,3,0,6.29); ctx.fill();
+      ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
+      ctx.fillText(p.t.toFixed(0)+'ms', x, y-8);
+    }
+  }
+}
+
+function drawRaster(){
+  if (!EP) return;
+  const cv=$('#cvRaster'), ctx=cv.getContext('2d');
+  const W=cv.clientWidth||900, H=cv.height;
+  cv.width=Math.round(W*devicePixelRatio);
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  const cs=getComputedStyle(document.body), C=k=>cs.getPropertyValue(k).trim();
+  const pad={l:56,r:14,t:12,b:30};
+  plotFrame(ctx,W,H,C,pad);
+  const ch=+$('#anaCh').value;
+  const N=Math.min(EP.N, DEFAULTS.RASTER_MAX_ROWS);
+  const pw=W-pad.l-pad.r, ph=H-pad.t-pad.b;
+  const rowH=ph/N;
+  // escala de cor robusta
+  let vals=[];
+  const step=Math.max(1,Math.floor(EP.L/200));
+  for (let i=0;i<N;i++) for (let k=0;k<EP.L;k+=step) vals.push(Math.abs(EP.data[i][ch][k]));
+  vals.sort((a,b)=>a-b);
+  const lim=DSP.percentile(vals,0.97)||1;
+  const dark = document.body.dataset.theme==='bench';
+  const img=ctx.createImageData(Math.max(1,Math.round(pw)), Math.max(1,Math.round(ph)));
+  const IW=img.width, IH=img.height;
+  for (let py=0;py<IH;py++){
+    const i=Math.min(N-1, Math.floor(py/IH*N));
+    for (let px=0;px<IW;px++){
+      const k=Math.min(EP.L-1, Math.floor(px/IW*EP.L));
+      const v=Math.max(-1,Math.min(1, EP.data[i][ch][k]/lim));
+      let r,g,b;
+      if (v>=0){ const u=v; r=dark?20+u*235:255-u*30; g=dark?30+u*120:255-u*175; b=dark?45+u*40:255-u*195; }
+      else { const u=-v; r=dark?20+u*40:255-u*205; g=dark?30+u*140:255-u*145; b=dark?45+u*215:255-u*40; }
+      const o=(py*IW+px)*4;
+      img.data[o]=r; img.data[o+1]=g; img.data[o+2]=b; img.data[o+3]=255;
+    }
+  }
+  ctx.putImageData(img, Math.round(pad.l), Math.round(pad.t));
+  ctx.strokeStyle=C('--mark'); ctx.setLineDash([4,3]); ctx.lineWidth=1.2;
+  const x0=xMap(0,pad,W); ctx.beginPath(); ctx.moveTo(x0,pad.t); ctx.lineTo(x0,H-pad.b); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle=C('--ink-soft'); ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
+  const st=niceStep((EP.time[EP.L-1]-EP.time[0])/9);
+  for (let t=Math.ceil(EP.time[0]/st)*st;t<=EP.time[EP.L-1];t+=st) ctx.fillText(t.toFixed(0), xMap(t,pad,W), H-pad.b+14);
+  ctx.textAlign='right'; ctx.fillText('abalo 1', pad.l-5, pad.t+9);
+  ctx.fillText('abalo '+N, pad.l-5, H-pad.b-2);
+  ctx.textAlign='center'; ctx.fillText(DATA.labels[ch]+' — épocas individuais (ms)', (pad.l+W-pad.r)/2, H-4);
+}
+
+function renderMuscleTable(){
+  if (!EP) return;
+  const ai=+$('#anchorCh').value;
+  const emgIdx=DATA.types.map((t,i)=>t==='EMG'?i:-1).filter(i=>i>=0);
+  const rows=emgIdx.map(ch=>{
+    const m=EP.mean[ch];
+    let base=0,c=0; for(let k=EP.iA;k<=EP.iB;k++){ base+=m[k]; c++; } base/=Math.max(1,c);
+    const z0=EP.zeroIdx!==undefined?EP.zeroIdx:EP.pre;
+    let pk=0,pi=z0;
+    for (let k=Math.max(0,z0-Math.round(0.05*DATA.fs));k<Math.min(EP.L,z0+Math.round(0.3*DATA.fs));k++)
+      if (m[k]>pk){pk=m[k];pi=k;}
+    const th=base+(pk-base)*0.2;
+    let a=pi; while(a>0&&m[a]>th)a--;
+    let b=pi; while(b<EP.L-1&&m[b]>th)b++;
+    return { ch, on:EP.time[a], pkT:EP.time[pi], dur:(b-a)/DATA.fs*1000, amp:pk };
+  });
+  const ref=rows.find(r=>r.ch===ai);
+  $('#musTab').innerHTML = `<table><thead><tr>
+      <th>Músculo</th><th class="num">Início (ms)</th><th class="num">Latência vs. âncora (ms)</th>
+      <th class="num">Pico (ms)</th><th class="num">Duração (ms)</th><th class="num">Amplitude (µV)</th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td>${DATA.labels[r.ch]}${r.ch===ai?' <span class="tag">âncora</span>':''}</td>
+      <td class="num mono">${fmt(r.on,1)}</td>
+      <td class="num mono">${ref?fmt(r.on-ref.on,1):'—'}</td>
+      <td class="num mono">${fmt(r.pkT,1)}</td>
+      <td class="num mono">${fmt(r.dur,0)}</td>
+      <td class="num mono">${fmt(r.amp,1)}</td></tr>`).join('')}
+    </tbody></table>
+    <div class="note" style="margin-top:8px">Início medido a 20% da amplitude do pico sobre a média retificada.
+    Progressão crânio-caudal rápida sugere gerador reticular; propagação lenta bidirecional a partir de um miótomo médio sugere origem propriospinal.</div>`;
+}
+
+/* ==========================================================================
+   8 · VALIDAÇÃO
+   ========================================================================== */
+function meanOfIdx(idx, ch){
+  const L=EP.L, o=new Float32Array(L);
+  for (const i of idx){ const x=EP.data[i][ch]; for(let k=0;k<L;k++) o[k]+=x[k]; }
+  for (let k=0;k<L;k++) o[k]/=idx.length;
+  return o;
+}
+function corr(a,b){
+  const n=a.length; let ma=0,mb=0;
+  for(let i=0;i<n;i++){ma+=a[i];mb+=b[i];} ma/=n; mb/=n;
+  let sa=0,sb=0,sab=0;
+  for(let i=0;i<n;i++){const da=a[i]-ma,db=b[i]-mb; sa+=da*da; sb+=db*db; sab+=da*db;}
+  return sab/Math.sqrt(sa*sb||1e-12);
+}
+let SPLIT=null, splitRuns=0;
+function doSplit(random){
+  if (!EP){ $('#splitMsg').textContent='Calcule a média primeiro.'; return; }
+  const ch=+$('#anaCh').value;
+  let A,B;
+  if (random){
+    const idx=Array.from({length:EP.N},(_,i)=>i);
+    for (let i=idx.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [idx[i],idx[j]]=[idx[j],idx[i]]; }
+    const h=Math.floor(EP.N/2); A=idx.slice(0,h); B=idx.slice(h);
+    splitRuns++;
+  } else {
+    A=[]; B=[];
+    for (let i=0;i<EP.N;i++) (i%2?B:A).push(i);
+  }
+  const ma=meanOfIdx(A,ch), mb=meanOfIdx(B,ch);
+  SPLIT={ma,mb,r:corr(ma,mb),nA:A.length,nB:B.length,random};
+  $('#splitMsg').innerHTML = `n = ${A.length} / ${B.length} · correlação entre as metades r = <b>${SPLIT.r.toFixed(3)}</b>` +
+    (random?` · ${splitRuns} execuç${splitRuns===1?'ão':'ões'}`:' · divisão par/ímpar');
+  drawSplit();
+}
+function drawSplit(){
+  const cv=$('#cvSplit'), ctx=cv.getContext('2d');
+  const W=cv.clientWidth||900,H=cv.height;
+  cv.width=Math.round(W*devicePixelRatio);
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  const cs=getComputedStyle(document.body),C=k=>cs.getPropertyValue(k).trim();
+  const pad={l:52,r:14,t:12,b:30};
+  plotFrame(ctx,W,H,C,pad);
+  if (!SPLIT){ ctx.fillStyle=C('--ink-soft'); ctx.font='12px ui-sans-serif'; ctx.textAlign='center';
+    ctx.fillText('Execute a divisão para ver as duas metades.',W/2,H/2); return; }
+  let mx=1e-6;
+  for (const a of [SPLIT.ma,SPLIT.mb]) for (let k=0;k<EP.L;k++) if(Math.abs(a[k])>mx) mx=Math.abs(a[k]);
+  const yc=pad.t+(H-pad.t-pad.b)/2, g=((H-pad.t-pad.b)/2*0.88)/mx;
+  const negUp=$('#negUp').checked;
+  ctx.strokeStyle=C('--grid'); ctx.beginPath(); ctx.moveTo(pad.l,yc); ctx.lineTo(W-pad.r,yc); ctx.stroke();
+  [[SPLIT.ma,'--trace'],[SPLIT.mb,'--trace-3']].forEach(([a,col])=>{
+    ctx.strokeStyle=C(col); ctx.lineWidth=1.6; ctx.beginPath();
+    for (let k=0;k<EP.L;k++){ const y=yc-(negUp?-a[k]:a[k])*g, x=xMap(EP.time[k],pad,W); k?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+    ctx.stroke();
+  });
+  ctx.strokeStyle=C('--mark'); ctx.setLineDash([4,3]);
+  const x0=xMap(0,pad,W); ctx.beginPath(); ctx.moveTo(x0,pad.t); ctx.lineTo(x0,H-pad.b); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle=C('--ink-soft'); ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
+  const st=niceStep((EP.time[EP.L-1]-EP.time[0])/9);
+  for (let t=Math.ceil(EP.time[0]/st)*st;t<=EP.time[EP.L-1];t+=st) ctx.fillText(t.toFixed(0), xMap(t,pad,W), H-pad.b+14);
+  ctx.fillText('ms', W-pad.r-10, H-pad.b+14);
+}
+
+/* ---- bootstrap + surrogatos, em blocos assíncronos ---- */
+function sleep(){ return new Promise(r=>setTimeout(r,0)); }
+async function runStats(){
+  if (!EP){ $('#statMsg').textContent='Calcule a média primeiro.'; return; }
+  const ch=+$('#anaCh').value, L=EP.L, N=EP.N;
+  const nB=+$('#nBoot').value, nS=+$('#nSurr').value;
+  const alpha=+$('#alphaS').value, minDur=+$('#minDur').value;
+  const prog=$('#statProg'), bar=prog.querySelector('i');
+  prog.classList.add('on'); $('#btnStats').disabled=true;
+  $('#statMsg').textContent='Bootstrap…';
+
+  // bootstrap
+  const bootMat=new Float32Array(nB*L);
+  const acc=new Float64Array(L);
+  for (let b=0;b<nB;b++){
+    acc.fill(0);
+    for (let i=0;i<N;i++){ const x=EP.data[Math.floor(Math.random()*N)][ch]; for(let k=0;k<L;k++) acc[k]+=x[k]; }
+    for (let k=0;k<L;k++) bootMat[b*L+k]=acc[k]/N;
+    if (b%25===0){ bar.style.width=(b/nB*45)+'%'; await sleep(); }
+  }
+  const bLo=new Float32Array(L), bHi=new Float32Array(L), col=new Float32Array(nB);
+  for (let k=0;k<L;k++){
+    for (let b=0;b<nB;b++) col[b]=bootMat[b*L+k];
+    const s=Array.from(col).sort((a,b)=>a-b);
+    bLo[k]=DSP.percentile(s,alpha/2); bHi[k]=DSP.percentile(s,1-alpha/2);
+  }
+
+  // surrogatos: gatilhos aleatórios com o mesmo n e ISI mínimo observado
+  $('#statMsg').textContent='Surrogatos…';
+  const src = DATA.proc[ch];
+  const isi = EP.kept.length>1 ? Math.min(...EP.kept.slice(1).map((m,i)=>m-EP.kept[i])) : EP.L;
+  const minGap = Math.max(EP.L, Math.round(isi));
+  const lo=EP.pre+1, hi=DATA.n-EP.post-2;
+  const surrMat=new Float32Array(nS*L);
+  for (let s=0;s<nS;s++){
+    const trig=[]; let guard=0;
+    while (trig.length<N && guard<N*60){
+      const c=lo+Math.floor(Math.random()*(hi-lo));
+      if (trig.every(t=>Math.abs(t-c)>=minGap)) trig.push(c);
+      guard++;
+    }
+    acc.fill(0);
+    for (const c of trig){
+      const a=c-EP.pre;
+      // mesma correção de linha de base do pipeline principal
+      let mu=0,cnt=0;
+      for (let k=EP.iA;k<=EP.iB;k++){ mu+=src[a+k]; cnt++; }
+      mu/=Math.max(1,cnt);
+      for (let k=0;k<L;k++) acc[k]+=src[a+k]-mu;
+    }
+    for (let k=0;k<L;k++) surrMat[s*L+k]=acc[k]/Math.max(1,trig.length);
+    if (s%10===0){ bar.style.width=(45+s/nS*50)+'%'; await sleep(); }
+  }
+  const sLo=new Float32Array(L), sHi=new Float32Array(L), col2=new Float32Array(nS);
+  for (let k=0;k<L;k++){
+    for (let s=0;s<nS;s++) col2[s]=surrMat[s*L+k];
+    const arr=Array.from(col2).sort((a,b)=>a-b);
+    sLo[k]=DSP.percentile(arr,alpha/2); sHi[k]=DSP.percentile(arr,1-alpha/2);
+  }
+
+  // trechos significativos
+  const m=EP.mean[ch], sig=new Uint8Array(L);
+  for (let k=0;k<L;k++) sig[k] = (m[k]>sHi[k] || m[k]<sLo[k]) ? 1 : 0;
+  const need=Math.round(minDur*DATA.fs/1000);
+  const clusters=[]; let k0=-1;
+  for (let k=0;k<=L;k++){
+    if (k<L && sig[k]){ if (k0<0) k0=k; }
+    else if (k0>=0){
+      if (k-k0>=need){
+        let pk=0,pi=k0;
+        for (let j=k0;j<k;j++) if (Math.abs(m[j])>Math.abs(pk)){pk=m[j];pi=j;}
+        clusters.push({a:EP.time[k0], b:EP.time[k-1], peak:EP.time[pi], amp:pk});
+      } else { for(let j=k0;j<k;j++) sig[j]=0; }
+      k0=-1;
+    }
+  }
+  STATS={bLo,bHi,sLo,sHi,sig,clusters,nB,nS,alpha,minDur,ch};
+  PARAMS.stats={nB,nS,alpha,minDur};
+  bar.style.width='100%';
+  $('#statMsg').textContent=`${clusters.length} trecho(s) significativo(s) fora do envelope nulo.`;
+  drawStat(); renderVerdict(); computePeaks();
+  setTimeout(()=>{prog.classList.remove('on'); bar.style.width='0%';},400);
+  $('#btnStats').disabled=false;
+}
+
+function drawStat(){
+  const cv=$('#cvStat'), ctx=cv.getContext('2d');
+  const W=cv.clientWidth||900,H=cv.height;
+  cv.width=Math.round(W*devicePixelRatio);
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  const cs=getComputedStyle(document.body),C=k=>cs.getPropertyValue(k).trim();
+  const pad={l:52,r:14,t:12,b:30};
+  plotFrame(ctx,W,H,C,pad);
+  if (!STATS){ ctx.fillStyle=C('--ink-soft'); ctx.font='12px ui-sans-serif'; ctx.textAlign='center';
+    ctx.fillText('Execute a análise de significância.',W/2,H/2); return; }
+  const ch=STATS.ch, m=EP.mean[ch];
+  let mx=1e-6;
+  for (let k=0;k<EP.L;k++) mx=Math.max(mx,Math.abs(m[k]),Math.abs(STATS.sHi[k]),Math.abs(STATS.sLo[k]),Math.abs(STATS.bHi[k]),Math.abs(STATS.bLo[k]));
+  const yc=pad.t+(H-pad.t-pad.b)/2, g=((H-pad.t-pad.b)/2*0.9)/mx;
+  const negUp=$('#negUp').checked;
+  const Y=v=>yc-(negUp?-v:v)*g;
+
+  // envelope nulo
+  ctx.fillStyle=C('--ink-soft'); ctx.globalAlpha=.18; ctx.beginPath();
+  for (let k=0;k<EP.L;k++){ const x=xMap(EP.time[k],pad,W); k?ctx.lineTo(x,Y(STATS.sHi[k])):ctx.moveTo(x,Y(STATS.sHi[k])); }
+  for (let k=EP.L-1;k>=0;k--) ctx.lineTo(xMap(EP.time[k],pad,W),Y(STATS.sLo[k]));
+  ctx.closePath(); ctx.fill(); ctx.globalAlpha=1;
+  // IC bootstrap
+  ctx.fillStyle=C('--trace'); ctx.globalAlpha=.2; ctx.beginPath();
+  for (let k=0;k<EP.L;k++){ const x=xMap(EP.time[k],pad,W); k?ctx.lineTo(x,Y(STATS.bHi[k])):ctx.moveTo(x,Y(STATS.bHi[k])); }
+  for (let k=EP.L-1;k>=0;k--) ctx.lineTo(xMap(EP.time[k],pad,W),Y(STATS.bLo[k]));
+  ctx.closePath(); ctx.fill(); ctx.globalAlpha=1;
+  // média
+  ctx.strokeStyle=C('--trace'); ctx.lineWidth=1.7; ctx.beginPath();
+  for (let k=0;k<EP.L;k++){ const x=xMap(EP.time[k],pad,W); k?ctx.lineTo(x,Y(m[k])):ctx.moveTo(x,Y(m[k])); }
+  ctx.stroke();
+  // trechos significativos
+  ctx.strokeStyle=C('--mark'); ctx.lineWidth=3; ctx.globalAlpha=.85;
+  let run=false;
+  for (let k=0;k<EP.L;k++){
+    if (STATS.sig[k]){ const x=xMap(EP.time[k],pad,W); if(!run){ctx.beginPath();ctx.moveTo(x,Y(m[k]));run=true;} else ctx.lineTo(x,Y(m[k])); }
+    else if (run){ ctx.stroke(); run=false; }
+  }
+  if (run) ctx.stroke();
+  ctx.globalAlpha=1; ctx.lineWidth=1;
+  ctx.strokeStyle=C('--mark'); ctx.setLineDash([4,3]);
+  const x0=xMap(0,pad,W); ctx.beginPath(); ctx.moveTo(x0,pad.t); ctx.lineTo(x0,H-pad.b); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle=C('--ink-soft'); ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
+  const st=niceStep((EP.time[EP.L-1]-EP.time[0])/9);
+  for (let t=Math.ceil(EP.time[0]/st)*st;t<=EP.time[EP.L-1];t+=st) ctx.fillText(t.toFixed(0), xMap(t,pad,W), H-pad.b+14);
+}
+
+/* ==========================================================================
+   9 · PICOS, INTERPRETAÇÃO, RELATÓRIO
+   ========================================================================== */
+function computePeaks(){
+  if (!EP) return;
+  const ch=+$('#anaCh').value, m=EP.mean[ch];
+  const a=+$('#pkA').value, b=+$('#pkB').value;
+  let iA=0,iB=EP.L-1;
+  for (let k=0;k<EP.L;k++){ if (EP.time[k]<=a) iA=k; if (EP.time[k]<=b) iB=k; }
+  let pv=-Infinity,pi=iA,nv=Infinity,ni=iA;
+  for (let k=iA;k<=iB;k++){ if(m[k]>pv){pv=m[k];pi=k;} if(m[k]<nv){nv=m[k];ni=k;} }
+  EP.peaks={ pos:{t:EP.time[pi], v:pv}, neg:{t:EP.time[ni], v:nv}, ch, win:[a,b] };
+  renderReport(); renderVerdict(); drawAverage();
+}
+
+function classify(){
+  if (!EP || !EP.peaks) return null;
+  const P=EP.peaks, bd=emgBurstDuration();
+  const sig = STATS ? STATS.clusters : null;
+  const inWin = (t,a,b)=> t>=a && t<=b;
+  const sigNear = sig ? sig.filter(c=> c.b>=-1500 && c.a<=30) : null;
+  const hasSig = sigNear && sigNear.length>0;
+  let earliest = hasSig ? Math.min(...sigNear.map(c=>c.a)) : null;
+
+  let verdict, cls, why=[];
+  const cortical = inWin(P.pos.t,-45,-5) && Math.abs(P.pos.v)>Math.abs(P.neg.v)*0.5;
+  const bpLike = earliest!==null && earliest < -400 && P.neg.v < 0 && Math.abs(P.neg.v) > Math.abs(P.pos.v);
+
+  if (STATS && !hasSig){
+    cls='neg';
+    verdict='Nenhum transiente EEG time-locked significativo na janela analisada.';
+    why.push('A média não sai do envelope nulo gerado por gatilhos aleatórios, portanto o achado não sustenta um gerador cortical.');
+    why.push('Considere origem subcortical, reticular ou espinhal, e confirme com a duração do burst e o padrão de recrutamento muscular.');
+  } else if (bpLike){
+    cls='pos';
+    verdict='Negatividade lenta pré-movimento compatível com Bereitschaftspotential.';
+    why.push(`A atividade significativa começa em ${fmt(earliest,0)} ms, com pico negativo de ${fmt(P.neg.v,2)} µV a ${fmt(P.neg.t,0)} ms.`);
+    why.push('Um BP precedendo movimentos involuntários é o achado buscado em mioclonia funcional. Confirme com registro de movimentos voluntários como controle positivo.');
+  } else if (cortical){
+    cls='pos';
+    verdict='Espícula pré-mioclônica com latência compatível com mioclonia cortical.';
+    why.push(`Pico positivo de ${fmt(P.pos.v,2)} µV a ${fmt(P.pos.t,0)} ms do início do EMG; componente negativa de ${fmt(P.neg.v,2)} µV a ${fmt(P.neg.t,0)} ms.`);
+    why.push('A referência clássica é um pico positivo cerca de 20 ms antes do EMG para músculo distal da mão; latências maiores são esperadas em músculos proximais e membro inferior.');
+    if (isFinite(bd)) why.push(`Duração do burst EMG de ${fmt(bd,0)} ms ${bd<50?'reforça':'não reforça'} a origem cortical.`);
+  } else {
+    cls='neg';
+    verdict='Transiente presente, porém com latência ou morfologia fora do padrão cortical clássico.';
+    why.push(`Pico positivo a ${fmt(P.pos.t,0)} ms e negativo a ${fmt(P.neg.t,0)} ms.`);
+    why.push('Reveja a janela de busca, a escolha do canal e a precisão do onset do EMG antes de concluir.');
+  }
+  if (!STATS) why.push('A análise de significância ainda não foi executada — sem ela, a leitura permanece descritiva.');
+  if (EP.N<20) why.push(`Apenas ${EP.N} épocas: abaixo do mínimo prático. O alvo é 40–50 abalos.`);
+  if (isFinite(EP.jitter) && EP.jitter>5) why.push(`Jitter de alinhamento de ${fmt(EP.jitter,1)} ms: alto o bastante para borrar uma espícula cortical, cuja duração é da ordem de 10–20 ms. Reveja o canal âncora e o limiar antes de concluir por ausência de transiente.`);
+  return {verdict, cls, why, cortical, bpLike, hasSig};
+}
+
+function renderVerdict(){
+  const c=classify();
+  const html = !c ? '<div class="note">Aguardando a média.</div>'
+    : `<div class="verdict ${c.cls}"><b>${c.verdict}</b><br>${c.why.join(' ')}</div>`;
+  $('#repVerdict').innerHTML=html;
+  $('#statVerdict').innerHTML=html;
+}
+
+function renderReport(){
+  if (!EP || !EP.peaks) return;
+  const P=EP.peaks, f=PARAMS.filters||{}, d=PARAMS.detect||{}, e=PARAMS.epoch||{};
+  const bd=emgBurstDuration();
+  const rows=[
+    ['Canal de análise', DATA.labels[P.ch]],
+    ['Épocas aceitas / marcadas', `${EP.N} / ${MARKERS.length}`],
+    ['Épocas rejeitadas', EP.rejected.length],
+    ['Janela de busca de pico', `${P.win[0]} a ${P.win[1]} ms`],
+    ['Pico positivo', `${fmt(P.pos.v,2)} µV a ${fmt(P.pos.t,1)} ms`],
+    ['Pico negativo', `${fmt(P.neg.v,2)} µV a ${fmt(P.neg.t,1)} ms`],
+    ['Duração do burst EMG', `${fmt(bd,0)} ms`],
+    ['Referência de t = 0', $('#t0mode').value==='emg'
+        ? `início do EMG médio a ${$('#zeroFrac').value}% do pico (deslocamento ${fmt(EP.zeroShiftMs,1)} ms)`
+        : 'marcador do detector'],
+    ['Jitter do alinhamento', `${fmt(EP.jitter,2)} ms (desvio-padrão)`],
+    ['Compensação do envelope', `${(PARAMS.detect&&PARAMS.detect.leadCompMs)||0} ms`],
+    ['Realinhamento por correlação', (PARAMS.detect&&PARAMS.detect.xcorr)?'sim':'não'],
+    ['Canal âncora', PARAMS.anchor||'—'],
+    ['Algoritmo de detecção', d.algo||'—'],
+    ['Filtro EEG', `${f.eegHP}–${f.eegLP} Hz, ordem ${f.eegOrd}, fase zero`],
+    ['Filtro EMG', `${f.emgHP}–${f.emgLP} Hz, ordem ${f.emgOrd}, fase zero`],
+    ['Notch', f.notch? `${f.notch} Hz até o ${f.harm}º harmônico` : 'desligado'],
+    ['Referência', f.reref==='avg'?'média comum':(f.reref==='ch'?'eletrodo único':'original')],
+    ['Segmentação', `−${e.pre} / +${e.post} ms`],
+    ['Linha de base', e.blMode==='none'?'nenhuma':`${e.blA} a ${e.blB} ms (${e.blMode==='mean'?'subtração da média':'detrend linear'})`],
+    ['Estimador', e.estimator==='mean'?'média aritmética':(e.estimator==='median'?'mediana':'média aparada 20%')],
+    ['Rejeição pico-a-pico', e.ppRej? e.ppRej+' µV':'desligada'],
+    ['Amostragem', DATA.fs+' Hz'],
+    ['Arquivo', DATA.filename||'—']
+  ];
+  if (STATS){
+    rows.push(['Bootstrap', `${STATS.nB} reamostragens`]);
+    rows.push(['Surrogatos', `${STATS.nS}, envelope ${(100*(1-STATS.alpha)).toFixed(0)}%`]);
+    rows.push(['Trechos significativos', STATS.clusters.length
+      ? STATS.clusters.map(c=>`${fmt(c.a,0)}–${fmt(c.b,0)} ms (pico ${fmt(c.peak,0)} ms, ${fmt(c.amp,2)} µV)`).join('; ')
+      : 'nenhum']);
+  }
+  if (SPLIT) rows.push(['Correlação entre metades', SPLIT.r.toFixed(3)]);
+  $('#repTab').innerHTML = `<table><tbody>${rows.map(r=>
+    `<tr><th style="width:34%">${r[0]}</th><td class="mono">${r[1]}</td></tr>`).join('')}</tbody></table>`;
+}
+
+/* ==========================================================================
+   10 · EXPORTAÇÃO
+   ========================================================================== */
+function download(name, content, type){
+  const blob = content instanceof Blob ? content : new Blob([content],{type:type||'text/plain;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob); a.download=name;
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },0);
+}
+function csvAverages(){
+  const L=['channel,time_ms,mean_uV,sem_uV,n'];
+  for (let ch=0;ch<DATA.labels.length;ch++)
+    for (let k=0;k<EP.L;k++)
+      L.push(`${DATA.labels[ch]},${EP.time[k].toFixed(2)},${EP.mean[ch][k].toFixed(5)},${EP.sem[ch][k].toFixed(5)},${EP.N}`);
+  return L.join('\n');
+}
+function csvEpochs(){
+  const L=['epoch,time_ms,channel,value'];
+  for (let i=0;i<EP.N;i++)
+    for (let ch=0;ch<DATA.labels.length;ch++)
+      for (let k=0;k<EP.L;k++)
+        L.push(`${i+1},${EP.time[k].toFixed(2)},${DATA.labels[ch]},${EP.data[i][ch][k].toFixed(5)}`);
+  return L.join('\n');
+}
+function svgAverage(){
+  const W=900,H=430,pad={l:60,r:16,t:18,b:40};
+  const chs=selectedEEG(), ana=+$('#anaCh').value, negUp=$('#negUp').checked;
+  let mx=1e-6; for (const ch of chs) for(let k=0;k<EP.L;k++) mx=Math.max(mx,Math.abs(EP.mean[ch][k]));
+  const eegH=(H-pad.t-pad.b)*0.68, emgH=(H-pad.t-pad.b)*0.32;
+  const eegY=pad.t+eegH/2, emgY=pad.t+eegH+emgH-8;
+  const t0=EP.time[0], t1=EP.time[EP.L-1];
+  const X=t=>pad.l+(t-t0)/(t1-t0)*(W-pad.l-pad.r);
+  const Y=v=>eegY-(negUp?-v:v)*((eegH/2*0.9)/mx);
+  const path=(arr,fy)=>arr.reduce((s,_,k)=>s+(k?'L':'M')+X(EP.time[k]).toFixed(1)+' '+fy(arr[k]).toFixed(1)+' ','');
+  let g='';
+  const st=niceStep((t1-t0)/9);
+  for (let t=Math.ceil(t0/st)*st;t<=t1;t+=st){
+    g+=`<line x1="${X(t).toFixed(1)}" y1="${pad.t}" x2="${X(t).toFixed(1)}" y2="${H-pad.b}" stroke="#D7DEE2"/>`;
+    g+=`<text x="${X(t).toFixed(1)}" y="${H-pad.b+15}" font-size="10" text-anchor="middle" fill="#5A6672" font-family="monospace">${t.toFixed(0)}</text>`;
+  }
+  for (const ch of chs)
+    g+=`<path d="${path(EP.mean[ch],Y)}" fill="none" stroke="${ch===ana?'#1E3A5F':'#8A94A0'}" stroke-width="${ch===ana?1.8:1}" opacity="${ch===ana?1:.6}"/>`;
+  const emgIdx=DATA.types.map((t,i)=>t==='EMG'?i:-1).filter(i=>i>=0);
+  let emx=1e-6; for(const ch of emgIdx) for(let k=0;k<EP.L;k++) emx=Math.max(emx,EP.mean[ch][k]);
+  const Ye=v=>emgY-v*((emgH*0.82)/emx);
+  for (const ch of emgIdx) g+=`<path d="${path(EP.mean[ch],Ye)}" fill="none" stroke="#0E6E63" stroke-width="1.3"/>`;
+  g+=`<line x1="${X(0).toFixed(1)}" y1="${pad.t}" x2="${X(0).toFixed(1)}" y2="${H-pad.b}" stroke="#B3121D" stroke-dasharray="4 3"/>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+<rect width="${W}" height="${H}" fill="#FFFFFF"/>
+<rect x="${pad.l}" y="${pad.t}" width="${W-pad.l-pad.r}" height="${H-pad.t-pad.b}" fill="none" stroke="#C8CFCA"/>
+${g}
+<text x="${(pad.l+W-pad.r)/2}" y="${H-8}" font-size="11" text-anchor="middle" fill="#161C24" font-family="sans-serif">ms em relação ao início do EMG · ${DATA.labels[ana]} · n = ${EP.N}</text>
+</svg>`;
+}
+function sessionJSON(){
+  return JSON.stringify({
+    app:'JLBA v0.1', exported:new Date().toISOString(),
+    file:DATA.filename, fs:DATA.fs, n:DATA.n,
+    channels:DATA.labels.map((l,i)=>({label:l,type:DATA.types[i],unit:DATA.units[i]})),
+    params:PARAMS,
+    markers_samples:MARKERS.map(m=>+m.toFixed(3)),
+    markers_seconds:MARKERS.map(m=>+(m/DATA.fs).toFixed(4)),
+    epochs:{ accepted:EP?EP.N:0, rejected:EP?EP.rejected:[] },
+    peaks:EP?EP.peaks:null,
+    stats: STATS?{nB:STATS.nB,nS:STATS.nS,alpha:STATS.alpha,minDur:STATS.minDur,clusters:STATS.clusters}:null,
+    split: SPLIT?{r:SPLIT.r,nA:SPLIT.nA,nB:SPLIT.nB}:null
+  }, null, 2);
+}
+function reportHTML(){
+  const c=classify();
+  return `<!DOCTYPE html><meta charset="utf-8"><title>Relatório JLBA</title>
+<style>body{font:13px/1.6 system-ui,sans-serif;max-width:860px;margin:36px auto;padding:0 18px;color:#161C24}
+h1{font-size:16px;letter-spacing:.12em;text-transform:uppercase}
+table{border-collapse:collapse;width:100%;font-size:12.5px;margin:14px 0}
+th,td{border-bottom:1px solid #C8CFCA;padding:5px 8px;text-align:left}
+th{width:34%;color:#5A6672;font-weight:600}
+.v{border-left:3px solid #B3121D;background:#F1F3F1;padding:10px 13px;margin:14px 0}
+small{color:#5A6672}</style>
+<h1>Back-averaging travado no abalo</h1>
+<p><small>Gerado em ${new Date().toLocaleString('pt-BR')} · JLBA v0.1 · uso em pesquisa, não substitui julgamento clínico.</small></p>
+${svgAverage()}
+${$('#repTab').innerHTML}
+${c?`<div class="v"><b>${c.verdict}</b><br>${c.why.join(' ')}</div>`:''}
+${$('#musTab').innerHTML}`;
+}
+
+/* ==========================================================================
+   11 · LIGAÇÕES DE INTERFACE
+   ========================================================================== */
+function updateChips(){ $('#chipMk').innerHTML = `<b>${MARKERS.length}</b> marcadores`; }
+
+function showTab(name){
+  $$('#tabs button').forEach(b=>b.setAttribute('aria-selected', String(b.dataset.tab===name)));
+  ['dados','pre','det','avg','val','rep'].forEach(t=>$('#tab-'+t).classList.toggle('hidden', t!==name));
+  if (name==='pre') VIEW.mount('#viewerHostPre');
+  if (name==='det') VIEW.mount('#viewerHostDet');
+  if (name==='avg' && EP){ drawAverage(); drawRaster(); }
+  if (name==='val'){ drawSplit(); drawStat(); }
+}
+
+$('#tabs').addEventListener('click', e=>{
+  const b=e.target.closest('button'); if(!b||b.disabled) return; showTab(b.dataset.tab);
+});
+$('#btnTheme').onclick = ()=>{
+  const bench = document.body.dataset.theme==='bench';
+  document.body.dataset.theme = bench?'paper':'bench';
+  $('#btnTheme').textContent = bench?'Modo bancada':'Modo papel';
+  VIEW.draw(); if(EP){drawAverage();drawRaster();} drawSplit(); drawStat();
+};
+
+$('#fileIn').onchange = async e=>{
+  const f=e.target.files[0]; if(!f) return;
+  DATA.filename=f.name;
+  try{
+    if (/\.edf$|\.bdf$/i.test(f.name)){
+      const buf=await f.arrayBuffer();
+      const r=parseEDF(buf);
+      stageColumns(r.cols, r.header, r.n, r.fs, r.units);
+    } else {
+      const txt=await f.text();
+      const r=parseDelimited(txt);
+      stageColumns(r.cols, r.header, r.n, DEFAULTS.fs, null);
+    }
+  }catch(err){
+    $('#mapMsg').textContent='Não foi possível ler o arquivo: '+err.message;
+    console.error(err);
+  }
+};
+
+$('#btnSyn').onclick = ()=>{
+  const s=makeSynthetic($('#synMode').value);
+  Object.assign(DATA,{ loaded:true, fs:s.fs, n:s.n, labels:s.labels, types:s.types, units:s.units,
+    raw:s.ch, proc:s.ch.map(c=>Float32Array.from(c)), rect:[], env:[], filtered:false, filename:s.filename });
+  DATA.truth=s.truth;
+  MARKERS=[]; EP=null; STATS=null; SPLIT=null;
+  $('#panMap').classList.add('hidden');
+  onDataReady();
+  $('#filtMsg').textContent += `  Verdade-terreno: ${s.truth.times.length} abalos, modo “${s.truth.mode}”.`;
+};
+
+$('#btnAccept').onclick = acceptMapping;
+$('#reref').onchange = e=>$('#rerefChWrap').classList.toggle('hidden', e.target.value!=='ch');
+$('#btnFilter').onclick = ()=>{ applyFilters(); EP=null; STATS=null; };
+$$('[data-preset]').forEach(b=>b.onclick=()=>{
+  const p=b.dataset.preset;
+  if (p==='mio'){ $('#eegHP').value=1; $('#eegLP').value=70; }
+  if (p==='bp'){ $('#eegHP').value=0.01; $('#eegLP').value=50; $('#epPre').value=2500; $('#epPost').value=500;
+    $('#blA').value=-2500; $('#blB').value=-2000; $('#pkA').value=-2000; $('#pkB').value=50; }
+  if (p==='emg2'){ $('#emgHP').value=20; $('#emgLP').value=300; }
+  applyFilters();
+});
+$('#algo').onchange = e=>{
+  $('#parBacav').classList.toggle('hidden', e.target.value!=='bacav');
+  $('#parSD').classList.toggle('hidden', e.target.value!=='sd');
+  $('#parTK').classList.toggle('hidden', e.target.value!=='tkeo');
+};
+$('#btnDetect').onclick = runDetect;
+$('#btnClearMk').onclick = ()=>{ MARKERS=[]; EP=null; STATS=null; updateChips(); VIEW.draw(); $('#detMsg').textContent='Marcadores removidos.'; };
+$$('[data-ep]').forEach(b=>b.onclick=()=>{
+  const p=b.dataset.ep;
+  if (p==='focal'){ $('#epPre').value=200; $('#epPost').value=100; $('#blA').value=-200; $('#blB').value=-120; $('#pkA').value=-100; $('#pkB').value=20; }
+  if (p==='mio'){ $('#epPre').value=500; $('#epPost').value=200; $('#blA').value=-500; $('#blB').value=-300; $('#pkA').value=-100; $('#pkB').value=20; }
+  if (p==='bp'){ $('#epPre').value=2500; $('#epPost').value=500; $('#blA').value=-2500; $('#blB').value=-2000; $('#pkA').value=-2000; $('#pkB').value=50; }
+});
+$('#btnAvg').onclick = computeAverage;
+['#t0mode','#zeroFrac'].forEach(sel=>$(sel).onchange=()=>{
+  if (EP){ applyZeroReference(); STATS=null; SPLIT=null;
+    renderAvgStat(); drawAverage(); drawRaster(); renderMuscleTable(); computePeaks(); drawSplit(); drawStat(); }
+});
+['#envMode','#envWin'].forEach(sel=>$(sel).addEventListener('change', syncLead));
+$('#autoLead').onchange = syncLead;
+$('#anaCh').onchange = ()=>{ if(EP){ STATS=null; SPLIT=null; drawAverage(); drawRaster(); computePeaks(); drawSplit(); drawStat(); } };
+['#showSEM','#showBfly','#negUp'].forEach(s=>$(s).onchange=()=>{ drawAverage(); drawSplit(); drawStat(); });
+$('#avgGain').oninput=()=>drawAverage();
+$('#btnSplit').onclick = ()=>doSplit(true);
+$('#btnOddEven').onclick = ()=>doSplit(false);
+$('#btnStats').onclick = runStats;
+$('#btnPeaks').onclick = computePeaks;
+$('#expCsvAvg').onclick = ()=>EP&&download('jlba_medias.csv', csvAverages(),'text/csv');
+$('#expCsvEp').onclick = ()=>EP&&download('jlba_epocas.csv', csvEpochs(),'text/csv');
+$('#expSvg').onclick = ()=>EP&&download('jlba_backaverage.svg', svgAverage(),'image/svg+xml');
+$('#expPng').onclick = ()=>{ if(!EP) return; $('#cvAvg').toBlob(b=>download('jlba_backaverage.png', b)); };
+$('#expJson').onclick = ()=>download('jlba_sessao.json', sessionJSON(),'application/json');
+$('#expHtml').onclick = ()=>EP&&download('jlba_relatorio.html', reportHTML(),'text/html');
+window.addEventListener('resize', ()=>{ if(EP){drawAverage();drawRaster();} drawSplit(); drawStat(); });
+
+/* ==========================================================================
+   12 · AUTOTESTE NUMÉRICO
+   Roda no carregamento e reporta no console. Verifica o requisito central:
+   o pipeline não pode deslocar a latência do pico.
+   ========================================================================== */
+(function selfTest(){
+  const fs=1000; let pass=0, fail=0;
+  const chk=(n,ok,x)=>{ ok?pass++:fail++;
+    console.log(`  ${ok?'✓':'✗ FALHA'}  ${n}${x?'   ['+x+']':''}`); };
+  console.log('%cJLBA · autoteste numérico','font-weight:bold');
+
+  // 1 · fase zero
+  const n=4000, x=new Float32Array(n), peak=1500;
+  for (let i=0;i<n;i++) x[i]=10*Math.exp(-Math.pow((i-peak)/6,2))+2*Math.sin(2*Math.PI*0.3*i/fs);
+  const secs=DSP.butterHP(1,fs,4).concat(DSP.butterLP(70,fs,4));
+  const y=DSP.filtfilt(x,secs);
+  let bi=0,bv=-Infinity; for(let i=0;i<n;i++) if(y[i]>bv){bv=y[i];bi=i;}
+  const cz=DSP._fwd(x,secs); let ci=0,cv=-Infinity; for(let i=0;i<n;i++) if(cz[i]>cv){cv=cz[i];ci=i;}
+  chk('filtfilt não desloca o pico', Math.abs(bi-peak)<=1,
+      `${bi-peak} amostra(s); o mesmo filtro causal deslocaria ${ci-peak}`);
+
+  // 2 · resposta de banda
+  const amp=(f,s)=>{ const z=new Float32Array(8000);
+    for(let i=0;i<8000;i++) z[i]=Math.sin(2*Math.PI*f*i/fs);
+    const w=DSP.filtfilt(z,s); let m=0; for(let i=3000;i<5000;i++) m=Math.max(m,Math.abs(w[i])); return m; };
+  chk('banda 1–70 Hz correta', amp(10,secs)>0.95 && amp(200,secs)<0.05,
+      `10 Hz = ${amp(10,secs).toFixed(3)}, 200 Hz = ${amp(200,secs).toFixed(4)}`);
+
+  // 3 · passa-altas muito baixo, estável
+  const m2=new Float32Array(30000);
+  for(let i=0;i<30000;i++) m2[i]=50+20*Math.sin(2*Math.PI*10*i/fs);
+  const y2=DSP.filtfilt(DSP.detrend(m2), DSP.butterHP(0.01,fs,4));
+  let a2=0,ok2=true; for(let i=14000;i<16000;i++){ if(!isFinite(y2[i])) ok2=false; a2=Math.max(a2,Math.abs(y2[i])); }
+  chk('passa-altas 0,01 Hz estável', ok2 && a2>18 && a2<22, `amplitude de 10 Hz preservada: ${a2.toFixed(1)} µV`);
+
+  // 4 · detrend
+  const dc=DSP.detrend(Float32Array.from({length:200},(_,i)=>3+0.5*i));
+  let mxd=0; for(const v of dc) mxd=Math.max(mxd,Math.abs(v));
+  chk('detrend remove rampa linear', mxd<1e-3, `resíduo ${mxd.toExponential(1)}`);
+
+  console.log(`  ${pass} verificações passaram, ${fail} falharam.`);
+  console.log('%c  Validação completa contra verdade-terreno: carregue um registro sintético '+
+              'e compare a latência relatada com −20 ms (modo cortical).','color:#888');
+})();
+
+VIEW.init();
+showTab('dados');
+</script>
+</body>
+</html>
