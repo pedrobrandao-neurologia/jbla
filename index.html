@@ -249,9 +249,13 @@ canvas{display:block;width:100%;background:var(--field);border:1px solid var(--r
         <div class="col">
           <label class="f" for="fileIn">Arquivo</label>
           <input type="file" id="fileIn" accept=".txt,.csv,.tsv,.dat,.edf,.bdf">
+          <div class="progress" id="loadProg"><i></i></div>
+          <div class="note" id="loadMsg" style="margin-top:6px"></div>
           <div class="note" style="margin-top:8px">
             TXT/CSV: uma coluna por canal, separador espaço, tabulação, vírgula ou ponto-e-vírgula.
-            Cabeçalho opcional. Formato do BacAv (espaço, sem cabeçalho, 1ª coluna = tempo) é lido diretamente.
+            Cabeçalho opcional. O formato do BacAv (espaço, sem cabeçalho, 1ª coluna = tempo em segundos;
+            Vial et al. 2020) é detectado automaticamente: a amostragem é inferida da coluna de tempo e os
+            tipos EEG/EMG são sugeridos por análise espectral. Arquivos grandes são lidos em partes, sem travar a interface.
           </div>
         </div>
         <div class="col">
@@ -970,12 +974,10 @@ function makeSynthetic(mode){
 /* ==========================================================================
    3 · LEITURA DE ARQUIVOS
    ========================================================================== */
-function parseDelimited(text){
-  const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
-  if (!lines.length) throw new Error('Arquivo vazio.');
-  /* Detecção de separador: pontua cada candidato pela consistência da
-     contagem de campos e pela fração de campos numéricos em várias linhas.
-     Evita que decimais com vírgula (1,23 4,56) sejam lidos como separador. */
+/* Detecção de separador: pontua cada candidato pela consistência da contagem
+   de campos e pela fração de campos numéricos em várias linhas. Evita que
+   decimais com vírgula (1,23 4,56) sejam lidos como separador. */
+function detectDelimFormat(lines){
   const cand = [/\t/, /;/, /\s+/, /,/];
   const probe = lines.slice(0, Math.min(6, lines.length));
   let delim = /\s+/, bestScore = -1;
@@ -991,6 +993,16 @@ function parseDelimited(text){
     const score = consistent*2 + (tot ? num/tot : 0) + ncol*0.001;
     if (score > bestScore + 1e-9){ bestScore=score; delim=d; }
   }
+  const first = probe[0].trim().split(delim);
+  const numericFirst = first.every(v => v!=='' && isFinite(Number(v.replace(',', '.'))));
+  const commaDec = probe.some(l => l.trim().split(delim).some(f=>/^-?\d+,\d+$/.test(f)));
+  return { delim, header: numericFirst?null:first, ncol:first.length, commaDec };
+}
+
+function parseDelimited(text){
+  const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+  if (!lines.length) throw new Error('Arquivo vazio.');
+  const delim = detectDelimFormat(lines).delim;
   const first = lines[0].trim().split(delim);
   const numericFirst = first.every(v => v!=='' && isFinite(Number(v.replace(',', '.'))));
   const header = numericFirst ? null : first;
@@ -1003,6 +1015,124 @@ function parseDelimited(text){
     for (let c=0;c<ncol;c++){ const v = Number((p[c]||'').replace(',', '.')); cols[c][r] = isFinite(v)?v:0; }
   }
   return { cols, header, n:nrow };
+}
+
+/* ---- importação em chunks (formato BacAv e delimitados grandes) ----------
+   Arquivos como o mmc1.txt de Vial et al. 2020 têm >300 mil linhas: o parse
+   é incremental (fatias de ~4 MB com cessão de controle à UI entre elas),
+   os canais vão direto para Float32Array com crescimento geométrico, e a
+   1ª coluna tem estatísticas de passo acumuladas em dupla precisão para
+   inferir a amostragem sem o erro de quantização do Float32. */
+async function parseDelimitedAsync(file, onProg){
+  const size=file.size;
+  if (!size) throw new Error('Arquivo vazio.');
+  const probeText = await file.slice(0, Math.min(size, 65536)).text();
+  let probe = probeText.split(/\r?\n/);
+  if (probe.length>1 && size>65536) probe.pop();          // última pode estar cortada
+  probe = probe.filter(l=>l.trim().length);
+  if (!probe.length) throw new Error('Arquivo vazio.');
+  const fmt = detectDelimFormat(probe);
+  const ncol = fmt.ncol;
+  if (ncol<2) throw new Error('Apenas uma coluna detectada — confira o separador do arquivo.');
+
+  const avgLine = Math.max(4, probeText.length/Math.max(1,probe.length));
+  let cap = Math.ceil(size/avgLine)+64;
+  let cols = Array.from({length:ncol}, ()=> new Float32Array(cap));
+  let nrow=0, lineNo=0, headerSeen=!fmt.header;
+  // estatísticas do passo da coluna 1 (candidata a tempo), em float64
+  let prevT=NaN, dMin=Infinity, dMax=-Infinity, inc=true;
+  const dSample=[];
+
+  const grow=()=>{ cap=Math.ceil(cap*1.5); cols=cols.map(c=>{ const o=new Float32Array(cap); o.set(c); return o; }); };
+  const CHUNK=4*1024*1024;
+  let carry='';
+  for (let off=0; off<size; off+=CHUNK){
+    const textChunk = carry + await file.slice(off, Math.min(size, off+CHUNK)).text();
+    const lines = textChunk.split('\n');
+    carry = (off+CHUNK<size) ? lines.pop() : '';
+    for (const raw of lines){
+      const l=raw.trim();
+      lineNo++;
+      if (!l) continue;
+      if (!headerSeen){ headerSeen=true; continue; }
+      const p=l.split(fmt.delim);
+      if (p.length!==ncol)
+        throw new Error(`Linha ${lineNo}: ${p.length} coluna(s), esperava ${ncol}. Corrija o arquivo ou remova a linha.`);
+      if (nrow>=cap) grow();
+      for (let c=0;c<ncol;c++){
+        const v=Number(p[c].replace(',', '.'));
+        if (!isFinite(v))
+          throw new Error(`Linha ${lineNo}, coluna ${c+1}: valor não numérico "${p[c]}".`);
+        cols[c][nrow]=v;
+        if (c===0){
+          if (isFinite(prevT)){
+            const d=v-prevT;
+            if (d<=0) inc=false;
+            if (d<dMin) dMin=d;
+            if (d>dMax) dMax=d;
+            if (dSample.length<20000) dSample.push(d);
+          }
+          prevT=v;
+        }
+      }
+      nrow++;
+    }
+    if (onProg) onProg(Math.min(1,(off+CHUNK)/size));
+    await sleep();
+  }
+  if (!nrow) throw new Error('Nenhuma linha de dados no arquivo.');
+  if (cap!==nrow) cols=cols.map(c=>c.slice(0,nrow));
+  let timeStats=null;
+  if (inc && dSample.length>=2){
+    dSample.sort((a,b)=>a-b);
+    const med=DSP.percentile(dSample,0.5);
+    timeStats={ med, dMin, dMax, fs: 1/med, regular: med>0 && (dMax-dMin) < 0.01*med };
+  }
+  const warns=[];
+  if (fmt.commaDec) warns.push('Decimais com vírgula detectados e convertidos automaticamente para ponto — confira a coluna de faixas.');
+  return { cols, header:fmt.header, n:nrow, timeStats, warns,
+           bacav: !fmt.header && fmt.delim.source==='\\s+' && !!timeStats };
+}
+
+/* Classificação espectral automática EEG × EMG (sugestão, nunca imposição):
+   fração de potência < 5 Hz alta e sinal contínuo → EEG; fração 20–300 Hz
+   alta e/ou curtose alta (bursts sobre base silenciosa) → EMG. */
+function classifyChannelsSpectral(cols, timeCol, fs, n){
+  const nyq=fs/2;
+  const seg=Math.min(DSP.nextPow2(Math.min(n,8192)), DSP.nextPow2(n)/2)||1024;
+  const out=[];
+  for (let c=0;c<cols.length;c++){
+    if (c===timeCol){ out.push('TIME'); continue; }
+    const x=cols[c];
+    let pLow=0,pHigh=0,pTot=0;
+    const nSeg=Math.min(3, Math.max(1,Math.floor(n/seg)));
+    for (let s=0;s<nSeg;s++){
+      const a=Math.floor((n-seg)*(nSeg===1?0:s/(nSeg-1)));
+      const re=new Float64Array(seg), im=new Float64Array(seg);
+      let mu=0; for (let k=0;k<seg;k++) mu+=x[a+k]; mu/=seg;
+      for (let k=0;k<seg;k++) re[k]=x[a+k]-mu;
+      DSP.fft(re,im);
+      for (let k=1;k<seg/2;k++){
+        const f=k*fs/seg, P=re[k]*re[k]+im[k]*im[k];
+        pTot+=P;
+        if (f<5) pLow+=P;
+        if (f>=20 && f<=Math.min(300,nyq*0.95)) pHigh+=P;
+      }
+    }
+    const fracLow=pTot?pLow/pTot:0, fracHigh=pTot?pHigh/pTot:0;
+    // curtose em amostragem esparsa: bursts fásicos disparam m4
+    const st=Math.max(1,Math.floor(n/50000));
+    let m=0,cnt=0; for (let k=0;k<n;k+=st){ m+=x[k]; cnt++; } m/=cnt;
+    let v=0,m4=0; for (let k=0;k<n;k+=st){ const d=x[k]-m; v+=d*d; m4+=d*d*d*d; }
+    v/=cnt; m4/=cnt;
+    const kurt=v>0? m4/(v*v) : 3;
+    let t;
+    if (fracLow>=0.5) t='EEG';
+    else if (fracHigh>=0.35 || kurt>=6) t='EMG';
+    else t = fracLow>=fracHigh ? 'EEG' : 'EMG';
+    out.push(t);
+  }
+  return out;
 }
 
 function parseEDF(buf){
@@ -1080,9 +1210,24 @@ function guessType(name){
 /* ---- pipeline de carga ---- */
 let PENDING = null;
 
-function stageColumns(cols, header, n, fs, units){
-  PENDING = { cols, header, n, fs: fs||DEFAULTS.fs, units: units||[] };
-  $('#fsIn').value = Math.round(PENDING.fs);
+function stageColumns(cols, header, n, fs, units, opts){
+  opts = opts||{};
+  PENDING = { cols, header, n, fs: fs||DEFAULTS.fs, units: units||[], timeStats: opts.timeStats||null };
+  const notes=[];
+  if (opts.timeStats){
+    const ts=opts.timeStats;
+    if (ts.regular){
+      PENDING.fs = ts.fs;
+      notes.push(`amostragem inferida da coluna de tempo: ${fmtFs(ts.fs)} Hz (passo ${(ts.med*1000).toFixed(3)} ms, jitter ${(100*(ts.dMax-ts.dMin)/ts.med).toFixed(2)}%)`);
+    } else {
+      const ok = window.confirm(
+        `O passo da coluna de tempo é irregular (mín ${(ts.dMin*1000).toFixed(3)} ms, máx ${(ts.dMax*1000).toFixed(3)} ms, mediana ${(ts.med*1000).toFixed(3)} ms).\n`+
+        `Há lacunas ou amostragem variável no registro.\n\nContinuar assumindo a mediana (${fmtFs(ts.fs)} Hz)?`);
+      if (ok){ PENDING.fs = ts.fs; notes.push(`passo de tempo IRREGULAR — assumida a mediana: ${fmtFs(ts.fs)} Hz; latências podem estar distorcidas perto das lacunas`); }
+      else notes.push('passo de tempo irregular — informe a amostragem manualmente');
+    }
+  }
+  $('#fsIn').value = fmtFs(PENDING.fs);
   $('#nSamp').value = n.toLocaleString('pt-BR');
   $('#durTxt').value = (n/PENDING.fs).toFixed(1)+' s';
   const tb = $('#mapBody'); tb.innerHTML='';
@@ -1091,11 +1236,11 @@ function stageColumns(cols, header, n, fs, units){
     const step = Math.max(1, Math.floor(n/20000));
     for (let k=0;k<n;k+=step){ if(c[k]<mn)mn=c[k]; if(c[k]>mx)mx=c[k]; }
     const name = header ? header[i] : ('ch'+(i+1));
-    let t = header ? guessType(name) : (i===0?'TIME':'EEG');
-    if (!header && i===0){
-      // heurística BacAv: 1ª coluna monotônica crescente = tempo
-      t = (c[1]>c[0] && c[Math.min(n-1,1000)]>c[0]) ? 'TIME' : 'EEG';
-    }
+    let t;
+    if (opts.types && opts.types[i]) t=opts.types[i];
+    else if (header) t=guessType(name);
+    else if (i===0) t = (c[1]>c[0] && c[Math.min(n-1,1000)]>c[0]) ? 'TIME' : 'EEG';
+    else t='EEG';
     const tr = document.createElement('tr');
     tr.innerHTML = `<td class="num mono">${i+1}</td>
       <td><input type="text" value="${name}" data-lab="${i}"></td>
@@ -1107,9 +1252,14 @@ function stageColumns(cols, header, n, fs, units){
     tb.appendChild(tr);
   });
   $('#panMap').classList.remove('hidden');
-  $('#mapMsg').textContent = header ? 'Rótulos lidos do cabeçalho do arquivo.' : 'Sem cabeçalho: rótulos genéricos atribuídos.';
+  const head=[];
+  if (opts.fmtName) head.push(opts.fmtName);
+  head.push(header ? 'rótulos lidos do cabeçalho' : 'sem cabeçalho: rótulos genéricos');
+  if (opts.suggested) head.push('tipos EEG/EMG sugeridos por análise espectral — a numeração inclui a coluna de tempo como 1; revise antes de confirmar');
+  $('#mapMsg').textContent = head.concat(notes).concat(opts.warns||[]).join(' · ')+'.';
   $('#panMap').scrollIntoView({behavior:'smooth', block:'nearest'});
 }
+function fmtFs(fs){ return Math.abs(fs-Math.round(fs))<0.01 ? String(Math.round(fs)) : fs.toFixed(2); }
 
 function acceptMapping(){
   const cols = PENDING.cols;
@@ -1126,10 +1276,17 @@ function acceptMapping(){
   });
   if (!raw.length){ $('#mapMsg').textContent='Nenhum canal atribuído. Marque ao menos um EEG e um EMG.'; return; }
   let fs = Number($('#fsIn').value)||DEFAULTS.fs;
-  if (timeCol>=0 && PENDING.n>10){
-    const dt = (PENDING.cols[timeCol][1000]-PENDING.cols[timeCol][0])/1000;
-    if (dt>0){ const f = 1/dt; if (Math.abs(f-fs)/fs > 0.02){ fs = Math.round(f); $('#fsIn').value=fs;
-      $('#mapMsg').textContent='Amostragem recalculada a partir da coluna de tempo: '+fs+' Hz.'; } }
+  if (timeCol===0 && PENDING.timeStats && PENDING.timeStats.regular){
+    fs = +fmtFs(PENDING.timeStats.fs);              // já inferida em dupla precisão
+  } else if (timeCol>=0 && PENDING.n>10){
+    // mediana dos diffs amostrados (robusta à quantização do Float32)
+    const c=PENDING.cols[timeCol], m=Math.min(PENDING.n-1, 5000), ds=[];
+    const st=Math.max(1,Math.floor((PENDING.n-1)/m));
+    for (let k=st;k<PENDING.n;k+=st) ds.push((c[k]-c[k-st])/st);
+    ds.sort((a,b)=>a-b);
+    const med=DSP.percentile(ds,0.5);
+    if (med>0){ const f=1/med; if (Math.abs(f-fs)/fs > 0.02){ fs=f; $('#fsIn').value=fmtFs(f);
+      $('#mapMsg').textContent='Amostragem recalculada a partir da coluna de tempo: '+fmtFs(f)+' Hz.'; } }
   }
   Object.assign(DATA, { loaded:true, fs, n:PENDING.n, labels, types, units, raw,
     proc: raw.map(c=>Float32Array.from(c)), rect:[], env:[], filtered:false });
@@ -1889,6 +2046,10 @@ function quantifyBP(){
   const amp=-mn;                                 // negatividade máxima (µV)
   const classic = amp>=5 && mu<0;                // critério visual convencional
   const significant = p<0.05 && mu<0;
+  /* rampa positiva significativa: em registros de convenção/referência
+     desconhecida (ex.: TXT sem rótulos) pode ser um BP com polaridade
+     invertida — relatar com ressalva, sem contar como BP no laudo */
+  const significantInv = p<0.05 && mu>0;
   /* inflexão BP1/BP2 por duas retas (BP2 tipicamente ~400 ms antes do onset) */
   const sse=(a,b)=>{
     let sx=0,sy=0,sxx=0,sxy=0,c=0;
@@ -1907,7 +2068,7 @@ function quantifyBP(){
     if (s<bestS){ bestS=s; bestCp=cp; }
   }
   const bp2 = (bestCp>0 && bestS < s1*0.85) ? EP.time[bestCp] : null;
-  return { na:false, slope:mu, t, p, df:N-1, amp, classic, significant, bp2,
+  return { na:false, slope:mu, t, p, df:N-1, amp, classic, significant, significantInv, bp2,
            wA:EP.time[iA], wB:EP.time[iB] };
 }
 
@@ -2845,6 +3006,7 @@ function classify(){
   if (ERD && ERD.sigPre) why.push(cortical&&hasSig
     ? 'Atenção: há também ERD beta pré-abalo significativa — achado discordante; reveja a possibilidade de imitação/sobreposição funcional.'
     : 'ERD beta/gama pré-abalo significativa — favorece origem funcional (Meppelink 2016; Beudel 2018).');
+  if (bpq && !bpq.na && bpq.significantInv) why.push('Rampa pré-movimento POSITIVA significativa: se a convenção de polaridade do registro estiver invertida (possível em TXT sem rótulos, com unidades arbitrárias), corresponde a um BP — confira referência e montagem antes de excluir preparação motora.');
   if (!STATS) why.push('A análise de significância ainda não foi executada — sem ela, a leitura permanece descritiva.');
   if (EP.N<20) why.push(`Apenas ${EP.N} épocas: abaixo do mínimo prático. O alvo é 40–50 abalos; a literatura emprega de 50 a 200.`);
   if (isFinite(EP.jitter) && EP.jitter>5) why.push(`Jitter de alinhamento de ${fmt(EP.jitter,1)} ms: alto o bastante para borrar uma espícula cortical, cuja duração é da ordem de 10–20 ms. Reveja o canal âncora e o limiar antes de concluir por ausência de transiente.`);
@@ -2926,7 +3088,7 @@ function renderReport(){
   if (bpq){
     rows.push(['BP clássico (≥ 5 µV)', bpq.na ? `não avaliado — ${bpq.why}` : (bpq.classic?'presente':'ausente')+` (negatividade máxima ${fmt(bpq.amp,1)} µV)`]);
     if (!bpq.na){
-      rows.push(['BP quantificado', `inclinação ${fmt(bpq.slope,2)} µV/s em ${fmt(bpq.wA,0)} a ${fmt(bpq.wB,0)} ms · t=${fmt(bpq.t,2)} (gl ${bpq.df}) · p=${bpq.p<0.001?'<0,001':fmt(bpq.p,3)} → ${bpq.significant?'significativo':'não significativo'}`]);
+      rows.push(['BP quantificado', `inclinação ${fmt(bpq.slope,2)} µV/s em ${fmt(bpq.wA,0)} a ${fmt(bpq.wB,0)} ms · t=${fmt(bpq.t,2)} (gl ${bpq.df}) · p=${bpq.p<0.001?'<0,001':fmt(bpq.p,3)} → ${bpq.significant?'significativo':(bpq.significantInv?'rampa POSITIVA significativa — se a convenção de polaridade do registro estiver invertida, corresponde a um BP; confira a referência/montagem':'não significativo')}`]);
       rows.push(['Inflexão BP precoce/tardio', bpq.bp2!==null ? `${fmt(bpq.bp2,0)} ms (referência ~−400 ms)` : 'não identificada']);
     }
   }
@@ -3104,20 +3266,36 @@ $('#btnTheme').onclick = ()=>{
 $('#fileIn').onchange = async e=>{
   const f=e.target.files[0]; if(!f) return;
   DATA.filename=f.name;
+  const prog=$('#loadProg'), bar=prog.querySelector('i'), msg=$('#loadMsg');
+  prog.classList.add('on'); bar.style.width='0%'; msg.textContent='Lendo '+f.name+'…';
+  await sleep();
   try{
     if (/\.edf$|\.bdf$/i.test(f.name)){
       const buf=await f.arrayBuffer();
       const r=parseEDF(buf);
       stageColumns(r.cols, r.header, r.n, r.fs, r.units);
     } else {
-      const txt=await f.text();
-      const r=parseDelimited(txt);
-      stageColumns(r.cols, r.header, r.n, DEFAULTS.fs, null);
+      const r=await parseDelimitedAsync(f, p=>{ bar.style.width=(p*90).toFixed(0)+'%'; });
+      const timeCol = (!r.header && r.timeStats) ? 0 : -1;
+      let types=null, suggested=false;
+      if (!r.header){
+        msg.textContent='Classificando canais por espectro…'; await sleep();
+        const fsGuess = (r.timeStats && r.timeStats.regular) ? r.timeStats.fs : (Number($('#fsIn').value)||DEFAULTS.fs);
+        types=classifyChannelsSpectral(r.cols, timeCol, fsGuess, r.n);
+        suggested=true;
+      }
+      bar.style.width='100%';
+      stageColumns(r.cols, r.header, r.n, DEFAULTS.fs, null,
+        { types, suggested, timeStats:r.timeStats, warns:r.warns,
+          fmtName: r.bacav ? 'formato BacAv detectado (tempo + '+(r.cols.length-1)+' canais)' : null });
     }
+    msg.textContent='';
   }catch(err){
     $('#mapMsg').textContent='Não foi possível ler o arquivo: '+err.message;
+    msg.textContent='Não foi possível ler o arquivo: '+err.message;
     console.error(err);
   }
+  setTimeout(()=>{ prog.classList.remove('on'); bar.style.width='0%'; },400);
 };
 
 $('#btnSyn').onclick = ()=>{
