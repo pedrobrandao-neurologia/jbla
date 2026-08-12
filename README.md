@@ -1,6 +1,6 @@
 # JLBA — Jerk-Locked Back-Averaging
 
-Aplicação para **back-averaging travado no abalo mioclônico** (jerk-locked back-averaging) de registros EEG–poliEMG, voltada à investigação neurofisiológica de mioclonias: detecção do correlato cortical pré-mioclônico (espícula pré-EMG da mioclonia cortical) e do **Bereitschaftspotential** (potencial de prontidão, buscado na mioclonia funcional).
+Aplicação para **back-averaging travado no abalo mioclônico** (jerk-locked back-averaging) de registros EEG–poliEMG, voltada à investigação neurofisiológica de mioclonias: detecção do correlato cortical pré-mioclônico (espícula pré-EMG da mioclonia cortical), do **Bereitschaftspotential** (potencial de prontidão) e da **ERD beta pré-abalo** (buscados na mioclonia funcional), além de **SPLA** (promediação travada no período silente) para mioclonia negativa/asterixis.
 
 Todo o programa é um único arquivo — `index.html` — que roda inteiramente no navegador, **offline e sem dependências externas**. Nenhum dado sai da sua máquina: o sinal nunca é enviado a servidor algum.
 
@@ -26,14 +26,16 @@ O back-averaging responde a uma pergunta: **existe um evento EEG consistentement
 4. testa estatisticamente se a onda média é real ou artefato do acaso;
 5. gera um relatório com latências, amplitudes e uma interpretação de apoio.
 
-Os dois achados clássicos que o programa ajuda a identificar:
+Os principais achados que o programa ajuda a identificar:
 
 | Achado | Padrão esperado | Significado usual |
 |---|---|---|
-| **Espícula pré-mioclônica** | Transiente bifásico (positivo–negativo) com pico ~20 ms antes do EMG em músculo distal da mão, máximo na região central contralateral | Mioclonia cortical |
+| **Espícula pré-mioclônica** | Transiente bifásico (positivo–negativo) com pico ~20 ms antes do EMG em músculo distal da mão, máximo na região central contralateral, com inversão de polaridade através do escalpo | Mioclonia cortical |
 | **Bereitschaftspotential (BP)** | Negatividade lenta crescente iniciando ≥ 400–1500 ms antes do EMG, máxima no vértice | Mioclonia funcional (movimento com preparação motora voluntária) |
+| **ERD beta/gama pré-abalo** | Dessincronização (queda de potência 13–45 Hz) antes do movimento, no mapa tempo-frequência | Mioclonia funcional — mais sensível que o BP (65% vs 25%; Meppelink 2016, Beudel 2018) |
+| **Onda aguda pré-silêncio (SPLA)** | Positividade precedendo o **início** do período silente em contração tônica | Mioclonia negativa de origem cortical (asterixis; Ugawa 1989) |
 
-A ausência de qualquer transiente significativo é igualmente informativa (sugere gerador subcortical, reticular ou espinhal — a interpretar junto à duração do burst e ao padrão de recrutamento muscular).
+A ausência de qualquer transiente significativo é igualmente informativa (sugere gerador subcortical, reticular ou espinhal — a interpretar junto à duração do burst e ao padrão de recrutamento muscular), mas **ausência não exclui**: o laudo do programa lembra explicitamente as limitações do JLBA de EEG (Latorre 2023; Mima 1998).
 
 ---
 
@@ -45,15 +47,16 @@ O programa é organizado como um pipeline sequencial. Cada aba corresponde a uma
 
 **Carregar um registro próprio** — formatos aceitos:
 
-- **TXT/CSV/TSV**: uma coluna por canal; separador espaço, tabulação, vírgula ou ponto-e-vírgula; cabeçalho opcional (se houver, os rótulos são usados para adivinhar o tipo de cada canal). O formato de exportação do **BacAv** (separado por espaço, sem cabeçalho, 1ª coluna = tempo em segundos) é lido diretamente.
-- **EDF/EDF+**: cabeçalho lido integralmente (rótulos, unidades, ganhos de calibração). Canais com taxas de amostragem diferentes são reamostrados por interpolação linear para a taxa mais alta do arquivo.
+- **TXT/CSV/TSV**: uma coluna por canal; separador espaço, tabulação, vírgula ou ponto-e-vírgula (a detecção do separador tolera decimais com vírgula); cabeçalho opcional (se houver, os rótulos são usados para adivinhar o tipo de cada canal). O formato de exportação do **BacAv** (separado por espaço, sem cabeçalho, 1ª coluna = tempo em segundos) é lido diretamente.
+- **EDF/EDF+ e BDF (BioSemi, 24 bits)**: cabeçalho lido integralmente (rótulos, unidades, ganhos de calibração); canais de anotação são descartados. Canais com taxas de amostragem diferentes são reamostrados por interpolação linear para a taxa mais alta do arquivo.
 
 Depois de carregar, confira a **tabela de mapeamento**: cada coluna precisa de um tipo — `EEG`, `EMG`, `ACC` (acelerômetro), `TRIG`, `TIME` (coluna de tempo) ou `ignorar`. O programa tenta adivinhar pelos rótulos, mas a atribuição correta de EEG/EMG é sua responsabilidade e determina que filtro cada canal recebe. Se houver coluna de tempo, a taxa de amostragem é recalculada a partir dela.
 
-**Registro sintético para validação** — três exemplos com verdade-terreno conhecida (9 canais EEG 10-20 + 3 EMG do antebraço direito, 1000 Hz, 90 s):
+**Registro sintético para validação** — quatro exemplos com verdade-terreno conhecida (9 canais EEG 10-20 + 3 EMG do antebraço direito, 1000 Hz, 90 s):
 
-- *Mioclonia cortical*: espícula positivo-negativa com pico a **−20 ms** em C3. O pipeline deve recuperar essa latência.
+- *Mioclonia cortical*: espícula positivo-negativa com pico a **−20 ms** em C3, com campo dipolar (inversão de polaridade no hemisfério oposto). O pipeline deve recuperar essa latência e a inversão.
 - *Mioclonia funcional*: BP de rampa lenta iniciando ~1,6 s antes do abalo, máximo em Cz.
+- *Mioclonia negativa (SPLA)*: contração tônica com períodos silentes de 120 ms, onda aguda positiva a **−25 ms** do início do silêncio e mioclonia positiva precedente em metade dos eventos.
 - *Controle negativo*: abalos EMG **sem** transiente EEG acoplado. O pipeline **não** deve produzir achado significativo.
 
 Recomenda-se rodar os três sintéticos antes de analisar dados reais: é a forma de verificar que os parâmetros escolhidos não criam nem destroem o achado.
@@ -62,10 +65,10 @@ Recomenda-se rodar os três sintéticos antes de analisar dados reais: é a form
 
 Todos os filtros são **Butterworth de fase zero** (aplicação forward–backward, tipo *filtfilt*): a filtragem **não desloca a latência dos picos** — requisito central, já que a latência é o desfecho diagnóstico do exame. Um autoteste numérico roda a cada carregamento da página e confirma isso no console do navegador (F12).
 
-- **EEG**: passa-altas / passa-baixas / ordem configuráveis. Presets: `1–70 Hz` (mioclonia) e `0,01–50 Hz` (BP — o passa-altas precisa ser baixíssimo para não atenuar a rampa lenta).
-- **EMG**: presets `10–250 Hz` e `20–300 Hz`.
+- **EEG**: passa-altas / passa-baixas / ordem configuráveis. Presets citados: `1–70 Hz` (mioclonia, Vial/Hallett), `0,01–50 Hz` (BP — o passa-altas precisa ser baixíssimo para não atenuar a rampa lenta), `0,05–50 Hz` (prática clássica, Shibasaki/Barrett) e `0,05–350 Hz` (banda larga de Meppelink para ERD/BP, limitada pela amostragem).
+- **EMG**: presets `10–250 Hz` e `20–300 Hz` (o preset de Meppelink ajusta também o EMG para 25–1250 Hz).
 - **Notch** 50 ou 60 Hz, com harmônicos até o 2º ou 3º.
-- **Re-referenciamento EEG**: original, média comum ou eletrodo único.
+- **Re-referenciamento EEG**: original, média comum, eletrodo único ou **Laplaciano de Hjorth** (subtração da média dos vizinhos 10-20 — derivação recomendada para estudos de coerência córtico-muscular e mais focal para o transiente).
 - **Detrend linear** por canal (opcional, ligado por padrão).
 - **Envelope EMG** (retificado puro, RMS móvel ou passa-baixas): usado **apenas pelo detector de abalos** — a média de EMG exibida usa sempre o sinal retificado puro.
 
@@ -80,6 +83,7 @@ Escolha o **canal âncora** (o EMG com os bursts mais nítidos) e o algoritmo:
 - **Limiar com validação de contexto (estilo BacAv)** — um ponto só vira marcador se cruzar o limiar **e** a janela anterior estiver silenciosa (linha de base < *Amplitude antes*) **e** a janela posterior confirmar burst substancial (> *Amplitude depois*). É o padrão recomendado.
 - **Linha de base + k·DP (Hodges–Bui)** — limiar estatístico sobre a mediana + k desvios robustos (IQR/1,349), com duração mínima acima do limiar.
 - **TKEO + limiar adaptativo** — operador de energia de Teager–Kaiser, sensível a bursts curtos.
+- **SPLA — período silente (mioclonia negativa)** — o detector espelhado: durante contração tônica mantida, procura quedas sustentadas do envelope abaixo de uma fração do nível tônico (duração entre 50 e 500 ms por padrão), exigindo atividade tônica imediatamente antes. O gatilho pode ser o **início** do silêncio (onde está o correlato cortical — Ugawa 1989) ou o **fim** (ao qual o movimento visível do asterixis se relaciona). Mioclonia positiva imediatamente precedente é contada e sinalizada, pois pode mascarar a mioclonia negativa ao exame clínico (Pollini 2024).
 - **Somente manual** — marque diretamente no traçado (clique adiciona, Alt+clique remove). A edição manual também pode ser usada para corrigir marcadores dos detectores automáticos.
 
 Duas correções importantes desta etapa:
@@ -89,7 +93,7 @@ Duas correções importantes desta etapa:
 
 A dica abaixo do botão orienta sobre o número de eventos: **< 20 abalos é insuficiente; o alvo prático é 40–50**, o que também permite a validação por metades. Intervalos muito curtos entre marcadores (< 250 ms em excesso) sugerem marcação dupla do mesmo burst.
 
-A tabela de **latências entre músculos** (preenchida após a média) mostra início, pico, duração e amplitude de cada EMG em relação à âncora — útil para avaliar padrão de propagação (crânio-caudal rápida → reticular; lenta e bidirecional a partir de miótomo médio → propriospinal).
+A tabela de **latências entre músculos** (preenchida após a média) mostra início, pico, duração e amplitude de cada EMG em relação à âncora — útil para avaliar padrão de propagação (crânio-caudal rápida → reticular; lenta e bidirecional a partir de miótomo médio → propriospinal). Se outro músculo for recrutado **antes** da âncora escolhida, o programa sugere trocá-la e refaz a análise em um clique — a literatura recomenda ancorar no músculo ativado mais precocemente.
 
 ### 4 · Épocas e média
 
@@ -103,6 +107,8 @@ O gráfico principal mostra o EEG médio (canal de análise em destaque, ±1 EPM
 
 A **imagem de épocas** (raster) mostra cada abalo como uma linha colorida: um transiente real forma uma **faixa vertical** alinhada em t = 0; ruído aleatório não forma faixa. É a inspeção visual mais honesta de consistência época a época.
 
+A **curva de convergência** plota a amplitude dos picos em função do número acumulado de épocas: se estabilizou, mais abalos não agregam; se ainda oscila, vale prolongar o registro. Responde empiricamente à pergunta "quantos eventos bastam?" — sobre a qual não há consenso na literatura (de 50 a 200 trials; Latorre 2023). Também são medidos a **duração do burst** classificada contra faixas normativas por região corporal (com a advertência explícita de que < 50 ms **não** é específico — controles normais geram bursts balísticos curtos) e o **coeficiente de variação da duração** entre épocas, cuja variabilidade alta favorece origem funcional.
+
 ### 5 · Validação
 
 A validação estatística é parte obrigatória do método, não um extra:
@@ -110,16 +116,19 @@ A validação estatística é parte obrigatória do método, não um extra:
 - **Reordenar e dividir / par-ímpar**: a média é recalculada em duas metades independentes. Uma onda real **sobrevive nas duas metades** (correlação alta entre elas); um artefato de poucas épocas, não.
 - **Bootstrap** (reamostragem das épocas): gera o intervalo de confiança da própria média.
 - **Surrogatos com gatilhos aleatórios**: repete todo o processo de promediação com marcadores posicionados ao acaso (mesmo n, mesmo espaçamento mínimo), construindo o **envelope nulo** — o que o acaso produziria. Trechos da média observada que saem do envelope por tempo suficiente (duração mínima configurável) são marcados como **significativos**.
+- **ERD 13–45 Hz**: decomposição tempo-frequência por Morlet (7 ciclos) em épocas de ±6 s, normalização em log contra a linha de base (−5 a −4 s) e **teste t de uma amostra com correção por permutação no nível de cluster**. O mapa tempo×frequência destaca os clusters significativos e a curva 31–45 Hz ± EPM acompanha o eixo temporal. A ERD pré-abalo favorece origem funcional com sensibilidade superior à do BP (Meppelink 2016; Beudel 2018); requer intervalos longos entre abalos — o programa avisa quando as épocas se sobrepõem.
 
 ### 6 · Relatório
 
-- Tabela completa de **medidas e parâmetros** (picos e latências na janela de busca, duração do burst EMG, jitter, todos os filtros e critérios usados — tudo o que é preciso para reproduzir a análise).
-- **Interpretação de apoio**: um veredito heurístico (espícula cortical / BP / sem transiente significativo / achado atípico) com as ressalvas pertinentes — n baixo, jitter alto, significância não executada. É apoio à leitura, não diagnóstico.
+- Tabela completa de **medidas e parâmetros** (picos e latências na janela de busca, duração do burst EMG e seu CV, **BP clássico e BP quantificado** — teste t da inclinação pré-movimento por época e ponto de inflexão BP precoce/tardio —, jitter, todos os filtros e critérios usados — tudo o que é preciso para reproduzir a análise).
+- **Topografia e salvaguardas contra artefato**: mapas esquemáticos 10-20 nos dois picos com verificação de **inversão de polaridade** através do escalpo (a ausência de inversão sugere artefato — Pollini 2024), correlação entre amplitude do transiente e amplitude do burst através das épocas (dependência sugere contaminação miogênica) e checagem de que o transiente precede o EMG por margem maior que o jitter.
+- **Interpretação de apoio**: um veredito heurístico com as ressalvas pertinentes, seguido de uma **matriz de achados** (presente / ausente / não avaliado, com o peso que a literatura atribui a cada um) e da regra explícita de que **ausência não exclui** — incluindo o lembrete de que SEP gigante, reflexo C e coerência córtico-muscular completam os achados definitivos e ainda não são cobertos pelo programa. É apoio à leitura, não diagnóstico.
 - **Exportação**:
   - Médias em **CSV longo** (`channel,time_ms,mean_uV,sem_uV,n`) e épocas individuais em CSV — prontos para R/Python;
   - Figura em **SVG** e **PNG**;
-  - **Sessão em JSON** — parâmetros, marcadores e épocas rejeitadas, **nunca o sinal bruto** (privacidade por construção);
-  - **Relatório em HTML** autocontido, com figura, tabelas e interpretação.
+  - **Sessão em JSON** — parâmetros, marcadores (incluindo períodos silentes do SPLA), resultados de BP/ERD, **nunca o sinal bruto** (privacidade por construção);
+  - **Relatório em HTML** autocontido, com figura, tabelas, matriz de achados e texto de métodos;
+  - **Texto de métodos para manuscrito (TXT)**: parágrafo gerado dos parâmetros efetivamente usados, no nível de detalhamento exigido por periódicos de neurofisiologia — resposta direta à crítica de subespecificação do JLBA (Latorre 2023).
 
 ---
 
@@ -133,20 +142,28 @@ A validação estatística é parte obrigatória do método, não um extra:
 5. Validação: dividir metades + executar bootstrap/surrogatos.
 6. Relatório: janela de busca de pico −100 a +20 ms; exportar.
 
-**Mioclonia funcional (busca de BP):** use os presets *BP* no filtro (0,01–50 Hz) **e** na segmentação (−2500/+500 ms) — o preset de filtro já ajusta a segmentação e a janela de busca automaticamente. São necessários intervalos longos entre abalos (> 3 s) para que a rampa pré-evento não seja contaminada pelo abalo anterior.
+**Mioclonia funcional (busca de BP e ERD):** use os presets *BP* no filtro (0,01–50 Hz) **e** na segmentação (−2500/+500 ms) — o preset de filtro já ajusta a segmentação e a janela de busca automaticamente. Rode também a **ERD** na aba Validação. São necessários intervalos longos entre abalos (> 3 s para o BP; idealmente > 12 s para ERD com janela de ±6 s) para que a análise pré-evento não seja contaminada pelo abalo anterior.
+
+**Mioclonia negativa / asterixis (SPLA):** com o paciente em contração tônica mantida, escolha o algoritmo *SPLA* na detecção, gatilho no **início** do silêncio para buscar o correlato cortical (e no **fim** para estudar o movimento visível). O sintético "mioclonia negativa" permite validar os parâmetros antes do dado real.
 
 ---
 
 ## Notas e limitações conhecidas
 
-- **BDF (BioSemi, 24 bits)**: a extensão é aceita, mas o arquivo é atualmente lido como EDF de 16 bits — o resultado será incorreto. Prefira converter para EDF/TXT. (Correção prevista.)
 - **Coluna de tempo em TXT/CSV**: assume-se **segundos**. Tempo em ms fará a taxa de amostragem ser recalculada errada — confira o campo "Amostragem" após carregar.
-- **Decimal com vírgula**: suportado, mas em arquivos separados por espaço com decimais em vírgula a detecção automática de separador pode errar; prefira decimais com ponto.
-- O processamento é síncrono no navegador: registros muito longos (> ~30 min multicanal em alta taxa) podem deixar a interface lenta durante a filtragem.
-- A "Interpretação de apoio" é heurística e calibrada para os padrões clássicos (mão distal, ~20 ms); latências maiores são esperadas em músculos proximais e membros inferiores.
+- O processamento é síncrono no navegador: registros muito longos (> ~30 min multicanal em alta taxa) podem deixar a interface lenta durante a filtragem; a ERD com muitas épocas leva alguns segundos (barra de progresso).
+- A ERD exige intervalos longos entre eventos; com épocas sobrepostas o programa executa mas sinaliza a ressalva.
+- A "Interpretação de apoio" é heurística e calibrada para os padrões clássicos (mão distal, ~20 ms); latências maiores são esperadas em músculos proximais e membros inferiores — e uma ampla variedade de relações temporais é descrita (Barrett 1992).
+- **Módulos ainda não cobertos** (constam como "não avaliado" na matriz de achados): SEP gigante, reflexo C / respostas de longa latência, coerência córtico-muscular e intermuscular, comparação de condições (involuntário vs voluntário) e sincronização com vídeo.
 
 ## Referências metodológicas
 
+- Ugawa Y, Shimpo T, Mannen T. *Physiological analysis of asterixis: silent period locked averaging.* JNNP 1989;52:89-93.
+- Meppelink AM, et al. *Event related desynchronisation predicts functional propriospinal myoclonus.* Parkinsonism Relat Disord 2016;31:116-8.
+- Beudel M, et al. *Improving neurophysiological biomarkers for functional myoclonic movements.* Parkinsonism Relat Disord 2018;51:3-8.
+- Latorre A, et al. *Rethinking the neurophysiological concept of cortical myoclonus.* Clin Neurophysiol 2023;156:2-14.
+- Pollini L, et al. *Negative myoclonus: neurophysiological study and clinical impact in progressive myoclonus ataxia.* Mov Disord 2024.
+- Mima T, et al. *Pathogenesis of cortical myoclonus studied by magnetoencephalography.* Ann Neurol 1998;43:598-607.
 - Shibasaki H, Kuroiwa Y. *Electroencephalographic correlates of myoclonus.* Electroencephalogr Clin Neurophysiol 1975;39:455-63.
 - Barrett G. *Jerk-locked averaging: technique and application.* J Clin Neurophysiol 1992;9:495-508.
 - Terada K, et al. *Presence of Bereitschaftspotential preceding psychogenic myoclonus.* JNNP 1995;58:745-7.
