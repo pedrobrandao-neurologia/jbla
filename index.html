@@ -6,9 +6,29 @@
 <title>JLBA — Jerk-Locked Back-Averaging</title>
 <!--
   ============================================================================
-  JLBA v0.1 — Jerk-Locked Back-Averaging de EEG-poliEMG
+  JLBA v0.2 — Jerk-Locked Back-Averaging de EEG-poliEMG
   Aplicação single-file, offline, sem dependências externas.
   Todo o processamento ocorre no navegador; nenhum dado sai da máquina.
+
+  NOVIDADES DA v0.2 (backlog derivado de revisão de literatura)
+  --------------------------------------------------------------------------
+  - ERD beta/gama (13–45 Hz) por Morlet com estatística de cluster por
+    permutação: a ERD pré-abalo é mais sensível que o BP para origem
+    funcional (65% vs 25%; Meppelink 2016, Beudel 2018).
+  - SPLA: silent period locked averaging para mioclonia negativa/asterixis
+    (Ugawa 1989; Pollini 2024), com gatilho no início ou no fim do silêncio.
+  - BP quantificado: teste t da inclinação pré-movimento por época e
+    ponto de inflexão BP precoce/tardio, além do critério visual de 5 µV.
+  - Topografia no pico com verificação de inversão de polaridade e
+    salvaguardas contra artefato miogênico (Pollini 2024).
+  - Curva de convergência por número de épocas; faixas normativas de
+    duração de burst por região; CV da duração entre épocas.
+  - Sugestão automática do músculo recrutado mais precocemente como âncora.
+  - Laudo em matriz de achados (presente/ausente/não avaliado) com a regra
+    explícita de que ausência não exclui (Latorre 2023; Mima 1998).
+  - Exportação de texto de métodos pronto para manuscrito.
+  - Laplaciano de Hjorth; presets de filtro adicionais citados; leitura de
+    BDF 24 bits; correções de HiDPI e de detecção de separador decimal.
 
   DECISÕES DE IMPLEMENTAÇÃO
   --------------------------------------------------------------------------
@@ -46,6 +66,20 @@
     Clin Neurophysiol 2006;117:2341-56.
   Latorre A, et al. Diagnostic utility of clinical neurophysiology in jerky
     movement disorders. Mov Disord Clin Pract 2025;12:272-84.
+  Latorre A, et al. Rethinking the neurophysiological concept of cortical
+    myoclonus. Clin Neurophysiol 2023;156:2-14.
+  Meppelink AM, et al. Event related desynchronisation predicts functional
+    propriospinal myoclonus. Parkinsonism Relat Disord 2016;31:116-8.
+  Beudel M, et al. Improving neurophysiological biomarkers for functional
+    myoclonic movements. Parkinsonism Relat Disord 2018;51:3-8.
+  Ugawa Y, Shimpo T, Mannen T. Physiological analysis of asterixis: silent
+    period locked averaging. J Neurol Neurosurg Psychiatry 1989;52:89-93.
+  Pollini L, et al. Negative myoclonus: neurophysiological study and clinical
+    impact in progressive myoclonus ataxia. Mov Disord 2024.
+  Mima T, et al. Pathogenesis of cortical myoclonus studied by
+    magnetoencephalography. Ann Neurol 1998;43:598-607.
+  Brown P, et al. Coherent cortical and muscle discharge in cortical
+    myoclonus. Brain 1999;122:461-72.
   Hodges PW, Bui BH. A comparison of computer-based methods for the
     determination of onset of muscle contraction using electromyography.
     Electroencephalogr Clin Neurophysiol 1996;101:511-9.
@@ -225,6 +259,7 @@ canvas{display:block;width:100%;background:var(--field);border:1px solid var(--r
           <select id="synMode">
             <option value="cortical">Mioclonia cortical — espícula P/N a −20 ms em C3</option>
             <option value="bp">Mioclonia funcional — Bereitschaftspotential</option>
+            <option value="nm">Mioclonia negativa — períodos silentes (SPLA)</option>
             <option value="none">Controle negativo — sem transiente time-locked</option>
           </select>
           <div class="btnbar">
@@ -284,8 +319,10 @@ canvas{display:block;width:100%;background:var(--field);border:1px solid var(--r
               <select id="eegOrd"><option>2</option><option selected>4</option><option>6</option><option>8</option></select></div>
           </div>
           <div class="btnbar">
-            <button class="sm" data-preset="mio">Preset mioclonia 1–70 Hz</button>
-            <button class="sm" data-preset="bp">Preset BP 0,01–50 Hz</button>
+            <button class="sm" data-preset="mio" title="Vial/Hallett (BacAv)">Preset mioclonia 1–70 Hz</button>
+            <button class="sm" data-preset="bp" title="Vial/Hallett (BacAv)">Preset BP 0,01–50 Hz</button>
+            <button class="sm" data-preset="cljlba" title="Prática clássica de JLBA (Shibasaki; Barrett 1992)">Clássico 0,05–50 Hz</button>
+            <button class="sm" data-preset="mepp" title="Meppelink 2016 — banda larga para ERD/BP (EEG 0,05–350 Hz, EMG 25–1250 Hz; limitada pela amostragem)">ERD 0,05–350 Hz</button>
           </div>
         </div>
         <div class="col">
@@ -307,8 +344,8 @@ canvas{display:block;width:100%;background:var(--field);border:1px solid var(--r
               <select id="notchF"><option value="0">desligado</option><option value="50">50</option><option value="60">60</option></select></div>
             <div><label class="f" for="notchH">Harmônicos</label>
               <select id="notchH"><option value="1">1º</option><option value="2" selected>até 2º</option><option value="3">até 3º</option></select></div>
-            <div><label class="f" for="reref">Referência EEG</label>
-              <select id="reref"><option value="none">original</option><option value="avg">média comum</option><option value="ch">eletrodo único</option></select></div>
+            <div><label class="f" for="reref"><abbr title="O Laplaciano de Hjorth (densidade de corrente) é a derivação recomendada para coerência córtico-muscular (Mima &amp; Hallett) e acentua fontes focais. Requer rótulos 10-20 reconhecíveis.">Referência EEG</abbr></label>
+              <select id="reref"><option value="none">original</option><option value="avg">média comum</option><option value="ch">eletrodo único</option><option value="lap">Laplaciano (Hjorth)</option></select></div>
             <div id="rerefChWrap" class="hidden"><label class="f" for="rerefCh">Eletrodo</label><select id="rerefCh"></select></div>
           </div>
           <div class="inline" style="margin-top:10px"><input type="checkbox" id="detrendChk" checked><label for="detrendChk">Remover tendência linear por canal</label></div>
@@ -344,6 +381,7 @@ canvas{display:block;width:100%;background:var(--field);border:1px solid var(--r
             <option value="bacav">Limiar com validação de contexto (BacAv)</option>
             <option value="sd">Linha de base + k·DP (Hodges-Bui)</option>
             <option value="tkeo">TKEO + limiar adaptativo</option>
+            <option value="spla">SPLA — período silente (mioclonia negativa)</option>
             <option value="manual">Somente manual</option>
           </select></div>
       </div>
@@ -368,6 +406,19 @@ canvas{display:block;width:100%;background:var(--field);border:1px solid var(--r
         <div><label class="f" for="tkK">k (desvios-padrão)</label><input type="number" id="tkK" value="4" step="0.5" min="1"></div>
         <div><label class="f" for="tkWin">Suavização (ms)</label><input type="number" id="tkWin" value="15" step="1" min="1"></div>
         <div><label class="f" for="tkBd">Duração do burst (s)</label><input type="number" id="tkBd" value="0.4" step="0.05" min="0.02"></div>
+      </div>
+
+      <div id="parSPLA" class="hidden" style="margin-top:12px">
+        <div class="grid-f">
+          <div><label class="f" for="spFrac"><abbr title="O silêncio é definido como envelope abaixo desta fração do nível tônico mediano do registro.">Limiar (fração do tônico)</abbr></label><input type="number" id="spFrac" value="0.4" step="0.05" min="0.05" max="0.9"></div>
+          <div><label class="f" for="spMin"><abbr title="Mioclonia negativa: pausa de 50 a 500 ms (Tassinari 1998); 88–194 ms em ataxia mioclônica progressiva (Pollini 2024).">Duração mínima (ms)</abbr></label><input type="number" id="spMin" value="50" step="10" min="20"></div>
+          <div><label class="f" for="spMax">Duração máxima (ms)</label><input type="number" id="spMax" value="500" step="10" min="50"></div>
+          <div><label class="f" for="spTon"><abbr title="Exige atividade tônica sustentada imediatamente antes da queda, para não marcar simples repouso.">Tônico prévio (ms)</abbr></label><input type="number" id="spTon" value="200" step="10" min="50"></div>
+          <div><label class="f" for="splaRef"><abbr title="Ugawa 1989: o movimento do asterixis relaciona-se temporalmente ao FIM do silêncio; o correlato cortical, ao INÍCIO.">Gatilho</abbr></label>
+            <select id="splaRef"><option value="onset" selected>início do silêncio</option><option value="end">fim do silêncio</option></select></div>
+        </div>
+        <div class="note" style="margin-top:8px">Requer contração tônica mantida no músculo âncora durante o registro.
+          Mioclonia positiva imediatamente antes do silêncio é frequente e será sinalizada — ela pode mascarar a mioclonia negativa ao exame clínico.</div>
       </div>
 
       <hr class="rule">
@@ -458,6 +509,14 @@ canvas{display:block;width:100%;background:var(--field);border:1px solid var(--r
     <h2>Imagem de épocas <span class="hint">Cada linha é um abalo, ordenado no tempo. Uma faixa vertical alinhada em t=0 é o transiente; ruído aleatório não forma faixa.</span></h2>
     <div class="body"><canvas id="cvRaster" height="260"></canvas></div>
   </div>
+
+  <div class="panel">
+    <h2>Curva de convergência <span class="hint">Amplitude dos picos na janela de busca em função do número acumulado de épocas. Decide, no exame, se vale prolongar o registro (a literatura emprega de 50 a 200 eventos; Latorre 2023).</span></h2>
+    <div class="body">
+      <canvas id="cvConv" height="220"></canvas>
+      <div class="note" id="convMsg" style="margin-top:6px"></div>
+    </div>
+  </div>
 </section>
 
 <!-- =========================== 5 · VALIDAÇÃO =========================== -->
@@ -499,6 +558,30 @@ canvas{display:block;width:100%;background:var(--field);border:1px solid var(--r
       <div id="statVerdict" style="margin-top:12px"></div>
     </div>
   </div>
+
+  <div class="panel">
+    <h2>ERD — dessincronização beta/gama (13–45 Hz) <span class="hint">A ERD pré-abalo é mais sensível que o BP para origem funcional: 65% vs 25% (Meppelink 2016; Beudel 2018). Ausente em mioclonia cortical orgânica nas séries citadas.</span></h2>
+    <div class="body">
+      <div class="grid-f">
+        <div><label class="f" for="erdWin">Janela ± (s)</label><input type="number" id="erdWin" value="6" step="1" min="2" max="10"></div>
+        <div><label class="f" for="erdBlA">Linha de base de (s)</label><input type="number" id="erdBlA" value="-5" step="0.5"></div>
+        <div><label class="f" for="erdBlB">até (s)</label><input type="number" id="erdBlB" value="-4" step="0.5"></div>
+        <div><label class="f" for="erdPerm"><abbr title="Permutações por inversão de sinal para a correção no nível de cluster.">Permutações</abbr></label><input type="number" id="erdPerm" value="200" step="50" min="100"></div>
+      </div>
+      <div class="btnbar">
+        <button class="primary" id="btnERD">Executar ERD</button>
+        <span class="note" id="erdMsg"></span>
+      </div>
+      <div class="progress" id="erdProg"><i></i></div>
+      <canvas id="cvERD" height="380" style="margin-top:12px"></canvas>
+      <div id="erdVerdict" style="margin-top:12px"></div>
+      <div class="note" style="margin-top:8px">
+        Mapa tempo×frequência do canal de análise (logRatio da potência vs linha de base; Morlet, 7 ciclos) com clusters
+        significativos contornados (teste t de uma amostra por bin, correção por permutação no nível de cluster, p&lt;0,05).
+        Abaixo, potência 31–45 Hz ± EPM. Requer intervalos longos entre abalos: com épocas de ±6 s sobrepostas a interpretação fica comprometida.
+      </div>
+    </div>
+  </div>
 </section>
 
 <!-- =========================== 6 · RELATÓRIO =========================== -->
@@ -515,6 +598,13 @@ canvas{display:block;width:100%;background:var(--field);border:1px solid var(--r
     </div>
   </div>
   <div class="panel">
+    <h2>Topografia e salvaguardas contra artefato <span class="hint">Um gerador cortical focal inverte polaridade através do escalpo (Pollini 2024); um transiente sem inversão merece desconfiança.</span></h2>
+    <div class="body">
+      <canvas id="cvTopo" height="250"></canvas>
+      <div id="topoMsg" style="margin-top:10px"></div>
+    </div>
+  </div>
+  <div class="panel">
     <h2>Interpretação de apoio</h2>
     <div class="body"><div id="repVerdict"><div class="note">Aguardando a média.</div></div></div>
   </div>
@@ -528,10 +618,13 @@ canvas{display:block;width:100%;background:var(--field);border:1px solid var(--r
         <button id="expPng">Figura (PNG)</button>
         <button id="expJson">Sessão (JSON)</button>
         <button id="expHtml">Relatório (HTML)</button>
+        <button id="expMet">Métodos para manuscrito (TXT)</button>
       </div>
       <div class="note" style="margin-top:10px">
         O CSV longo sai como <code>epoch,time_ms,channel,value</code>, pronto para <code>read.csv()</code>.
         A sessão JSON guarda parâmetros, marcadores e épocas excluídas — nunca o sinal bruto.
+        O texto de métodos descreve todos os parâmetros efetivamente usados, no formato exigido por periódicos de
+        neurofisiologia — resposta direta à crítica de subespecificação do JLBA (Latorre 2023).
       </div>
     </div>
   </div>
@@ -573,11 +666,25 @@ const DATA = {
 let MARKERS = [];            // amostras (float, sub-amostral)
 let EP = null;               // resultado da segmentação
 let STATS = null;            // resultado da validação
+let SIL = null;              // SPLA: {onsets, ends, nPosPre}
+let ERD = null;              // resultado da análise tempo-frequência
 let PARAMS = {};             // snapshot dos parâmetros usados
 
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const fmt = (v,d=1) => (v===null||v===undefined||!isFinite(v)) ? '—' : v.toFixed(d);
+
+/* Posições esquemáticas 10-20 (x: −1 esquerda…+1 direita; y: −1 anterior…+1 posterior).
+   Usadas pelo Laplaciano de Hjorth e pelos mapas topográficos. */
+const TOPO = {
+  FP1:[-0.31,-0.95], FPZ:[0,-1.00], FP2:[0.31,-0.95],
+  F7:[-0.81,-0.59], F3:[-0.55,-0.48], FZ:[0,-0.40], F4:[0.55,-0.48], F8:[0.81,-0.59],
+  T3:[-1.00,0], T7:[-1.00,0], C3:[-0.50,0], CZ:[0,0], C4:[0.50,0], T4:[1.00,0], T8:[1.00,0],
+  T5:[-0.81,0.59], P7:[-0.81,0.59], P3:[-0.55,0.48], PZ:[0,0.40], P4:[0.55,0.48], T6:[0.81,0.59], P8:[0.81,0.59],
+  O1:[-0.31,0.95], OZ:[0,1.00], O2:[0.31,0.95],
+  A1:[-1.15,0.05], A2:[1.15,0.05], M1:[-1.10,0.25], M2:[1.10,0.25]
+};
+function topoPos(label){ return TOPO[(label||'').toUpperCase().replace(/['’′]/g,'')] || null; }
 
 /* ==========================================================================
    1 · DSP
@@ -705,8 +812,68 @@ const DSP = {
     const i = (sorted.length-1)*p, lo = Math.floor(i), hi = Math.ceil(i);
     return sorted[lo] + (sorted[hi]-sorted[lo])*(i-lo);
   },
-  median(arr){ const s=Array.from(arr).sort((a,b)=>a-b); return this.percentile(s,0.5); }
+  median(arr){ const s=Array.from(arr).sort((a,b)=>a-b); return this.percentile(s,0.5); },
+  nextPow2(n){ let p=1; while (p<n) p<<=1; return p; },
+  /* FFT radix-2 in-place (re/im Float64Array, comprimento potência de 2) */
+  fft(re, im){
+    const n=re.length;
+    for (let i=1,j=0;i<n;i++){
+      let bit=n>>1;
+      for (; j&bit; bit>>=1) j^=bit;
+      j|=bit;
+      if (i<j){ const tr=re[i]; re[i]=re[j]; re[j]=tr; const ti=im[i]; im[i]=im[j]; im[j]=ti; }
+    }
+    for (let len=2;len<=n;len<<=1){
+      const ang=-2*Math.PI/len, wr=Math.cos(ang), wi=Math.sin(ang);
+      const half=len>>1;
+      for (let i=0;i<n;i+=len){
+        let cr=1, ci=0;
+        for (let k=0;k<half;k++){
+          const ur=re[i+k], ui=im[i+k];
+          const vr=re[i+k+half]*cr - im[i+k+half]*ci;
+          const vi=re[i+k+half]*ci + im[i+k+half]*cr;
+          re[i+k]=ur+vr; im[i+k]=ui+vi;
+          re[i+k+half]=ur-vr; im[i+k+half]=ui-vi;
+          const ncr=cr*wr-ci*wi; ci=cr*wi+ci*wr; cr=ncr;
+        }
+      }
+    }
+  },
+  ifft(re, im){
+    const n=re.length;
+    for (let i=0;i<n;i++) im[i]=-im[i];
+    this.fft(re,im);
+    for (let i=0;i<n;i++){ re[i]/=n; im[i]=-im[i]/n; }
+  }
 };
+
+/* ---- estatística auxiliar ---- */
+function normCDF(x){
+  const t=1/(1+0.2316419*Math.abs(x));
+  const d=0.3989422804014327*Math.exp(-x*x/2);
+  const p=d*t*(0.319381530+t*(-0.356563782+t*(1.781477937+t*(-1.821255978+t*1.330274429))));
+  return x>0 ? 1-p : p;
+}
+/* p bilateral do t de Student (aproximação normal com correção; boa para df≥8) */
+function tPvalue(t, df){
+  if (!isFinite(t)||df<1) return NaN;
+  const z=t*(1-1/(4*df))/Math.sqrt(1+t*t/(2*df));
+  return Math.min(1, 2*(1-normCDF(Math.abs(z))));
+}
+/* quantil crítico bilateral 0,05 do t (Cornish–Fisher a partir de z=1,96) */
+function tCrit(df){
+  const z=1.959964;
+  return z + (z*z*z+z)/(4*df) + (5*Math.pow(z,5)+16*z*z*z+3*z)/(96*df*df);
+}
+function pearson(a,b){
+  const n=Math.min(a.length,b.length); if (n<3) return NaN;
+  let ma=0,mb=0;
+  for (let i=0;i<n;i++){ ma+=a[i]; mb+=b[i]; } ma/=n; mb/=n;
+  let sa=0,sb=0,sab=0;
+  for (let i=0;i<n;i++){ const da=a[i]-ma, db=b[i]-mb; sa+=da*da; sb+=db*db; sab+=da*db; }
+  const den=Math.sqrt(sa*sb);
+  return den>0 ? sab/den : NaN;
+}
 
 /* ==========================================================================
    2 · GERADOR SINTÉTICO (verdade-terreno conhecida)
@@ -733,9 +900,9 @@ function makeSynthetic(mode){
       ch[c][i] = bg[i]*1.6 + 9*Math.sin(2*Math.PI*af*t+ph) + 6*Math.sin(2*Math.PI*0.4*t+c);
     }
   }
-  // ruído de base do EMG
+  // ruído de base do EMG; no modo de mioclonia negativa o canal âncora é tônico
   for (let c=0;c<emg.length;c++){
-    const w = whiteNoise(n, 3.5, rng);
+    const w = whiteNoise(n, (mode==='nm'&&c===0)?60:3.5, rng);
     ch[eeg.length+c] = DSP.filtfilt(w, DSP.butterLP(300, fs, 4));
   }
 
@@ -744,12 +911,32 @@ function makeSynthetic(mode){
   const minGap = mode==='bp' ? 3.2 : 0.9, spread = mode==='bp' ? 2.2 : 1.6;
   while (t < dur-2.5){ times.push(t); t += minGap + rng()*spread; }
 
-  // topografias
-  const topoSpike = {F3:.55,Fz:.35,F4:.12,C3:1.0,Cz:.62,C4:.16,P3:.48,Pz:.30,P4:.10};
+  // topografias — a espícula tem campo dipolar: inversão de polaridade no
+  // hemisfério oposto, como esperado de gerador cortical focal (Pollini 2024)
+  const topoSpike = {F3:.55,Fz:.35,F4:-.18,C3:1.0,Cz:.62,C4:-.22,P3:.48,Pz:.30,P4:-.14};
   const topoBP    = {F3:.72,Fz:.90,F4:.62,C3:.88,Cz:1.0,C4:.60,P3:.42,Pz:.46,P4:.34};
 
   for (const tk of times){
     const s0 = Math.round(tk*fs);
+    if (mode==='nm'){
+      // período silente de 120 ms no canal tônico
+      const durS=Math.round(0.12*fs);
+      for (let k=0;k<durS;k++){ const i=s0+k; if (i>=0&&i<n) ch[eeg.length][i]*=0.05; }
+      // mioclonia positiva imediatamente precedente em metade dos eventos
+      if (rng()<0.5){
+        for (let k=-55;k<-25;k++){
+          const i=s0+k; if (i<0||i>=n) continue;
+          ch[eeg.length][i] += 260*Math.exp(-Math.pow((k+40)/8,2))*(rng()*2-1);
+        }
+      }
+      // onda aguda positiva precedendo o INÍCIO do silêncio (Ugawa 1989)
+      for (let k=-70;k<=30;k++){
+        const i=s0+k; if (i<0||i>=n) continue;
+        const w = 8.0*Math.exp(-Math.pow((k+25)/7,2)) - 4.0*Math.exp(-Math.pow((k+8)/9,2));
+        for (let c=0;c<eeg.length;c++) ch[c][i] += w*(topoSpike[eeg[c]]||0.1);
+      }
+      continue;
+    }
     // burst EMG de 30 ms, agonista/antagonista sincrônicos, ADM 4 ms depois
     for (let c=0;c<emg.length;c++){
       const lag = c===2 ? 4 : 0, amp = c===0?230:(c===1?190:150);
@@ -786,9 +973,24 @@ function makeSynthetic(mode){
 function parseDelimited(text){
   const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
   if (!lines.length) throw new Error('Arquivo vazio.');
-  const cand = [/\t/, /;/, /,/, /\s+/];
-  let delim = /\s+/, best = 0;
-  for (const d of cand){ const c = lines[Math.min(1,lines.length-1)].trim().split(d).length; if (c>best){best=c; delim=d;} }
+  /* Detecção de separador: pontua cada candidato pela consistência da
+     contagem de campos e pela fração de campos numéricos em várias linhas.
+     Evita que decimais com vírgula (1,23 4,56) sejam lidos como separador. */
+  const cand = [/\t/, /;/, /\s+/, /,/];
+  const probe = lines.slice(0, Math.min(6, lines.length));
+  let delim = /\s+/, bestScore = -1;
+  for (const d of cand){
+    const counts = probe.map(l=>l.trim().split(d).length);
+    const ncol = counts[counts.length-1];
+    if (ncol<2) continue;
+    const consistent = counts.slice(1).every(v=>v===ncol) ? 1 : 0;
+    let num=0, tot=0;
+    for (const l of probe.slice(consistent?0:1)){
+      for (const f of l.trim().split(d)){ tot++; if (f!=='' && isFinite(Number(f.replace(',', '.')))) num++; }
+    }
+    const score = consistent*2 + (tot ? num/tot : 0) + ncol*0.001;
+    if (score > bestScore + 1e-9){ bestScore=score; delim=d; }
+  }
   const first = lines[0].trim().split(delim);
   const numericFirst = first.every(v => v!=='' && isFinite(Number(v.replace(',', '.'))));
   const header = numericFirst ? null : first;
@@ -804,8 +1006,11 @@ function parseDelimited(text){
 }
 
 function parseEDF(buf){
-  const dv = new DataView(buf), td = new TextDecoder('ascii');
+  const dv = new DataView(buf), td = new TextDecoder('latin1');
+  const u8 = new Uint8Array(buf);
   const str = (off,len)=> td.decode(new Uint8Array(buf,off,len)).trim();
+  const isBDF = u8[0]===255;             // BioSemi: byte 0 = 0xFF, amostras de 24 bits
+  const bps = isBDF ? 3 : 2;
   const nRec = parseInt(str(236,8),10);
   const durRec = parseFloat(str(244,8));
   const ns = parseInt(str(252,4),10);
@@ -830,20 +1035,36 @@ function parseEDF(buf){
   const cols = spr.map(()=> new Float32Array(nOut));
   const recSamples = spr.reduce((a,b)=>a+b,0);
   for (let r=0;r<nRec;r++){
-    let p = dataOff + r*recSamples*2;
+    let p = dataOff + r*recSamples*bps;
     for (let i=0;i<ns;i++){
       const k = spr[i];
       const gain = (phMax[i]-phMin[i])/((dgMax[i]-dgMin[i])||1);
       const off  = phMax[i] - gain*dgMax[i];
       const tmp = new Float32Array(k);
-      for (let j=0;j<k;j++){ tmp[j] = dv.getInt16(p+j*2, true)*gain + off; }
-      p += k*2;
+      if (isBDF){
+        for (let j=0;j<k;j++){
+          const q=p+j*3;
+          let v = u8[q] | (u8[q+1]<<8) | (u8[q+2]<<16);
+          if (v & 0x800000) v -= 0x1000000;
+          tmp[j] = v*gain + off;
+        }
+      } else {
+        for (let j=0;j<k;j++){ tmp[j] = dv.getInt16(p+j*2, true)*gain + off; }
+      }
+      p += k*bps;
       const base = r*sprMax, ratio = sprMax/k;
       if (ratio===1){ cols[i].set(tmp, base); }
       else { for (let j=0;j<sprMax;j++){ const u=j/ratio, a=Math.floor(u), b=Math.min(k-1,a+1); cols[i][base+j]=tmp[a]+(tmp[b]-tmp[a])*(u-a); } }
     }
   }
-  return { cols, header:label, n:nOut, fs, units:unit };
+  /* descarta canais de anotação do EDF+/BDF+ */
+  const keep = label.map(l=>!/ANNOTATION/i.test(l));
+  return {
+    cols: cols.filter((_,i)=>keep[i]),
+    header: label.filter((_,i)=>keep[i]),
+    n:nOut, fs,
+    units: unit.filter((_,i)=>keep[i])
+  };
 }
 
 function guessType(name){
@@ -912,7 +1133,7 @@ function acceptMapping(){
   }
   Object.assign(DATA, { loaded:true, fs, n:PENDING.n, labels, types, units, raw,
     proc: raw.map(c=>Float32Array.from(c)), rect:[], env:[], filtered:false });
-  MARKERS=[]; EP=null; STATS=null;
+  MARKERS=[]; SIL=null; EP=null; STATS=null; SPLIT=null; splitRuns=0; ERD=null;
   onDataReady();
 }
 
@@ -948,6 +1169,7 @@ function applyFilters(){
   const emgHP=+$('#emgHP').value, emgLP=+$('#emgLP').value, emgOrd=+$('#emgOrd').value;
   const nf=+$('#notchF').value, nh=+$('#notchH').value;
   const doDetr = $('#detrendChk').checked;
+  let lapWarn='';
   const t0=performance.now();
 
   const eegSecs = DSP.butterHP(eegHP,fs,eegOrd).concat(DSP.butterLP(eegLP,fs,eegOrd));
@@ -975,6 +1197,29 @@ function applyFilters(){
     const r = +$('#rerefCh').value;
     if (DATA.proc[r]){ const ref=Float32Array.from(DATA.proc[r]);
       for (const i of eegIdx){ const x=DATA.proc[i]; for(let k=0;k<DATA.n;k++) x[k]-=ref[k]; } }
+  } else if (mode==='lap'){
+    /* Laplaciano de Hjorth: subtrai a média dos até 4 vizinhos mais próximos
+       (distância no mapa 10-20 < 0,75). Derivação recomendada para CMC
+       (Mima & Hallett) e mais focal para o transiente pré-mioclônico. */
+    const pos = eegIdx.map(i=>({ i, p: topoPos(DATA.labels[i]) }));
+    const orig = {};
+    for (const {i} of pos) orig[i]=Float32Array.from(DATA.proc[i]);
+    let done=0;
+    for (const {i,p} of pos){
+      if (!p) continue;
+      const nb = pos.filter(o=>o.i!==i && o.p)
+        .map(o=>({ i:o.i, d: Math.hypot(o.p[0]-p[0], o.p[1]-p[1]) }))
+        .filter(o=>o.d<0.75).sort((a,b)=>a.d-b.d).slice(0,4);
+      if (nb.length<2) continue;
+      const x=DATA.proc[i];
+      for (let k=0;k<DATA.n;k++){
+        let s=0; for (const o of nb) s+=orig[o.i][k];
+        x[k]=orig[i][k]-s/nb.length;
+      }
+      done++;
+    }
+    if (!done) lapWarn='Laplaciano não aplicado: rótulos 10-20 não reconhecidos (use C3, Cz, C4…).';
+    else if (done<eegIdx.length) lapWarn=`Laplaciano aplicado a ${done}/${eegIdx.length} canais EEG (os demais não têm rótulo 10-20 ou vizinhos suficientes).`;
   }
 
   // EMG: retificação e envelope para o detector
@@ -992,7 +1237,7 @@ function applyFilters(){
 
   DATA.filtered = true;
   PARAMS.filters = { eegHP,eegLP,eegOrd,emgHP,emgLP,emgOrd,notch:nf,harm:nh,detrend:doDetr,reref:mode,envMode,envWin };
-  $('#filtMsg').textContent = `Filtros aplicados em ${((performance.now()-t0)/1000).toFixed(2)} s. Fase zero verificada.`;
+  $('#filtMsg').textContent = `Filtros aplicados em ${((performance.now()-t0)/1000).toFixed(2)} s. Fase zero verificada.` + (lapWarn?' '+lapWarn:'');
   if (eegHP>0 && eegHP/fs < DEFAULTS.HP_BIQUAD_MIN_RATIO)
     $('#filtMsg').textContent += ` Passa-altas de ${eegHP} Hz: seções RC de 1ª ordem para estabilidade numérica. `+
       `A constante de tempo é de ${(1/(2*Math.PI*eegHP)).toFixed(0)} s — descarte os primeiros segundos do registro.`;
@@ -1252,6 +1497,45 @@ function detectTKEO(sig, k, winMs, bdS){
   return out;
 }
 
+/* SPLA — silent period locked averaging (Ugawa 1989; Pollini 2024).
+   Detector espelhado: procura quedas sustentadas do envelope abaixo de uma
+   fração do nível tônico, com duração entre mín e máx, precedidas de
+   atividade tônica. Marca separadamente início e fim do silêncio e sinaliza
+   mioclonia positiva imediatamente precedente (frequente; pode mascarar a
+   mioclonia negativa ao exame clínico). */
+function detectSPLA(env, p){
+  const fs=DATA.fs, n=env.length;
+  const samp=[]; const st=Math.max(1,Math.floor(n/50000));
+  for (let i=0;i<n;i+=st) samp.push(env[i]);
+  samp.sort((a,b)=>a-b);
+  const tonic=DSP.percentile(samp,0.5) || 1e-6;
+  const thr=p.frac*tonic;
+  const nmin=Math.round(p.minMs*fs/1000), nmax=Math.round(p.maxMs*fs/1000);
+  const nton=Math.round(p.tonMs*fs/1000), nsus=Math.max(1,Math.round(0.01*fs));
+  const cs=new Float64Array(n+1);
+  for (let k=0;k<n;k++) cs[k+1]=cs[k]+env[k];
+  const meanR=(a,b)=>{ a=Math.max(0,a); b=Math.min(n,b); return b<=a?0:(cs[b]-cs[a])/(b-a); };
+  const onsets=[], ends=[]; let nPosPre=0;
+  let i=nton+1;
+  while (i<n-nmin){
+    if (env[i]<thr && env[i-1]>=thr && meanR(i-nton, i-nsus) > 0.8*tonic){
+      let j=i+1;
+      while (j<n-nsus && !(env[j]>=thr && meanR(j, j+nsus)>thr)) j++;
+      const dur=j-i;
+      if (dur>=nmin && dur<=nmax){
+        onsets.push(i); ends.push(j);
+        let mxp=0;
+        for (let k=Math.max(0,i-Math.round(0.1*fs));k<i;k++) if (env[k]>mxp) mxp=env[k];
+        if (mxp>1.8*tonic) nPosPre++;
+        i=j+nmin; continue;
+      }
+      i=j+1; continue;
+    }
+    i++;
+  }
+  return { onsets, ends, nPosPre };
+}
+
 function runDetect(){
   if (!DATA.filtered) applyFilters();
   const ai=+$('#anchorCh').value;
@@ -1260,38 +1544,51 @@ function runDetect(){
   const env=DATA.env[ai];
   if (!env){ $('#detMsg').textContent='Selecione um canal EMG válido.'; return; }
   let mk=[];
+  SIL=null;
+  syncLead();
+  const lead = Math.round(+$('#leadComp').value*DATA.fs/1000);
   if (algo==='bacav'){
     const p={thr:+$('#pThr').value, tb:+$('#pTb').value, ab:+$('#pAb').value,
              ta:+$('#pTa').value, aa:+$('#pAa').value, bd:+$('#pBd').value};
-    mk=detectBacAv(env,p); PARAMS.detect={algo,...p};
+    mk=detectBacAv(env,p).map(i=>i+lead); PARAMS.detect={algo,...p};
   } else if (algo==='sd'){
-    mk=detectSD(env, +$('#sdK').value, +$('#sdWin').value, +$('#sdBd').value, +$('#sdMin').value);
+    mk=detectSD(env, +$('#sdK').value, +$('#sdWin').value, +$('#sdBd').value, +$('#sdMin').value).map(i=>i+lead);
     PARAMS.detect={algo,k:+$('#sdK').value,win:+$('#sdWin').value,bd:+$('#sdBd').value,min:+$('#sdMin').value};
+  } else if (algo==='spla'){
+    const p={frac:+$('#spFrac').value, minMs:+$('#spMin').value, maxMs:+$('#spMax').value,
+             tonMs:+$('#spTon').value, ref:$('#splaRef').value};
+    const r=detectSPLA(env,p);
+    /* suavização centrada atrasa a borda de queda e antecipa a de subida */
+    SIL={ onsets:r.onsets.map(v=>v-lead), ends:r.ends.map(v=>v+lead), nPosPre:r.nPosPre };
+    mk = p.ref==='end' ? SIL.ends.slice() : SIL.onsets.slice();
+    PARAMS.detect={algo,...p};
   } else {
-    mk=detectTKEO(DATA.proc[ai], +$('#tkK').value, +$('#tkWin').value, +$('#tkBd').value);
+    mk=detectTKEO(DATA.proc[ai], +$('#tkK').value, +$('#tkWin').value, +$('#tkBd').value).map(i=>i+lead);
     PARAMS.detect={algo,k:+$('#tkK').value,win:+$('#tkWin').value,bd:+$('#tkBd').value};
   }
   PARAMS.anchor = DATA.labels[ai];
-  syncLead();
-  const lead = Math.round(+$('#leadComp').value*DATA.fs/1000);
-  mk = mk.map(i=>i+lead);
   if ($('#xcorrAlign').checked){ MARKERS=mk; mk = xcorrRealign(mk); }
   PARAMS.detect.leadCompMs = +$('#leadComp').value;
   PARAMS.detect.xcorr = $('#xcorrAlign').checked;
   MARKERS = mk;
-  EP=null; STATS=null;
+  EP=null; STATS=null; ERD=null;
   updateChips();
   const isi = MARKERS.length>1 ? MARKERS.slice(1).map((m,i)=>(m-MARKERS[i])/DATA.fs) : [];
-  $('#detMsg').textContent = `${MARKERS.length} abalos · intervalo mediano ${isi.length?DSP.median(isi).toFixed(2):'—'} s · compensação ${$('#leadComp').value} ms`;
-  $('#detTip').innerHTML = tipFor(MARKERS.length, isi);
+  if (algo==='spla'){
+    $('#detMsg').textContent = `${MARKERS.length} períodos silentes · gatilho: ${PARAMS.detect.ref==='end'?'fim':'início'} do silêncio · intervalo mediano ${isi.length?DSP.median(isi).toFixed(2):'—'} s`;
+    $('#detTip').innerHTML = (SIL.nPosPre?`Mioclonia positiva imediatamente antes do silêncio em <b>${SIL.nPosPre}</b> evento(s) — achado frequente que pode mascarar a mioclonia negativa ao exame (Pollini 2024). `:'') + tipFor(MARKERS.length, isi);
+  } else {
+    $('#detMsg').textContent = `${MARKERS.length} abalos · intervalo mediano ${isi.length?DSP.median(isi).toFixed(2):'—'} s · compensação ${$('#leadComp').value} ms`;
+    $('#detTip').innerHTML = tipFor(MARKERS.length, isi);
+  }
   VIEW.draw();
 }
 function tipFor(n, isi){
   const bits=[];
   if (n===0) bits.push('Nenhum burst marcado. Reduza o <b>Limiar</b> ou o critério <b>Amplitude depois</b>.');
   else if (n<20) bits.push('Menos de 20 abalos: abaixo do mínimo prático para revelar um transiente com segurança. Reduza o <b>Limiar</b> ou registre mais eventos.');
-  else if (n<40) bits.push('Entre 20 e 40 abalos: suficiente para uma primeira média, insuficiente para dividir em duas metades com conforto. O alvo prático é 40–50.');
-  else bits.push('Número adequado: permite dividir a amostra e verificar a persistência da onda.');
+  else if (n<40) bits.push('Entre 20 e 40 abalos: suficiente para uma primeira média, insuficiente para dividir em duas metades com conforto. O alvo prático é 40–50; a literatura emprega de 50 a 200 (Latorre 2023).');
+  else bits.push('Número adequado: permite dividir a amostra e verificar a persistência da onda. Use a curva de convergência (aba Épocas) para decidir se mais eventos ainda agregariam.');
   if (isi.length){
     const short = isi.filter(v=>v<0.25).length;
     if (short > isi.length*0.1) bits.push('Vários intervalos abaixo de 250 ms sugerem marcação dupla do mesmo burst — aumente a <b>Duração do burst</b>.');
@@ -1402,7 +1699,7 @@ function computeAverage(){
   EP.jitter = measureJitter();
   STATS=null;
   $('#avgMsg').textContent = `${N} épocas aceitas · ${ep.rejected.length} rejeitadas`;
-  renderAvgStat(); drawAverage(); drawRaster(); renderMuscleTable(); computePeaks();
+  renderAvgStat(); drawAverage(); drawRaster(); drawConv(); renderMuscleTable(); computePeaks();
   return EP;
 }
 
@@ -1412,10 +1709,34 @@ function computeAverage(){
    ao início do EMG retificado médio remove essa dependência: no dado
    sintético, a latência relatada ficou em −24 ms para limiares de 0,15 a 0,50,
    enquanto a referência ao marcador oscilou de −27 a −34 ms. */
+function isSPLA(){ return !!(PARAMS.detect && PARAMS.detect.algo==='spla'); }
+function zeroLabel(){
+  if (isSPLA()) return PARAMS.detect.ref==='end' ? 'ms em relação ao fim do período silente' : 'ms em relação ao início do período silente';
+  return $('#t0mode').value==='emg' ? 'ms em relação ao início do EMG' : 'ms em relação ao marcador do detector';
+}
 function applyZeroReference(){
   const L=EP.L, ai=+$('#anchorCh').value;
   let shift=0;
-  if ($('#t0mode').value==='emg' && EP.mean[ai]){
+  if ($('#t0mode').value==='emg' && EP.mean[ai] && isSPLA()){
+    /* SPLA: o "onset" é a borda do silêncio no EMG retificado médio —
+       queda abaixo de (1−frac)·nível tônico para o gatilho de início,
+       retomada acima desse nível para o gatilho de fim. */
+    const m=EP.mean[ai];
+    let ton=0,c=0; for (let k=EP.iA;k<=EP.iB;k++){ ton+=m[k]; c++; } ton/=Math.max(1,c);
+    const frac=Math.max(0.05,Math.min(0.9,(+$('#zeroFrac').value||20)/100));
+    const th=ton*(1-frac);
+    const lo=Math.max(1,EP.pre-Math.round(0.12*DATA.fs)), hi=Math.min(L-1,EP.pre+Math.round(0.2*DATA.fs));
+    const refEnd = PARAMS.detect.ref==='end';
+    let z=EP.pre, found=false, inSil=false;
+    for (let k=lo;k<=hi;k++){
+      if (!refEnd){ if (m[k]<th){ z=k; found=true; break; } }
+      else { if (m[k]<th) inSil=true; else if (inSil){ z=k; found=true; break; } }
+    }
+    if (found && z>0 && m[z]!==m[z-1]){
+      const f=(m[z-1]-th)/(m[z-1]-m[z]);
+      shift = EP.timeMk[z-1] + Math.max(0,Math.min(1,f))/DATA.fs*1000;
+    } else if (found) shift = EP.timeMk[z];
+  } else if ($('#t0mode').value==='emg' && EP.mean[ai]){
     const m=EP.mean[ai];
     let base=0,c=0; for(let k=EP.iA;k<=EP.iB;k++){ base+=m[k]; c++; } base/=Math.max(1,c);
     let pk=0,pi=EP.pre;
@@ -1467,7 +1788,8 @@ function renderAvgStat(){
     <div><div class="k">Intervalo mediano</div><div class="v">${isi.length?DSP.median(isi).toFixed(2):'—'}<small> s</small></div></div>
     <div><div class="k">Duração do burst</div><div class="v">${fmt(bd,0)}<small> ms</small></div></div>
     <div><div class="k">Jitter do alinhamento</div><div class="v">${fmt(EP.jitter,1)}<small> ms DP</small></div></div>
-    <div><div class="k">t = 0</div><div class="v" style="font-size:14px">${$('#t0mode').value==='emg'?'início do EMG':'marcador'}<small><br>desloc. ${fmt(EP.zeroShiftMs,1)} ms</small></div></div>`;
+    <div><div class="k">t = 0</div><div class="v" style="font-size:14px">${isSPLA()?(PARAMS.detect.ref==='end'?'fim do silêncio':'início do silêncio'):($('#t0mode').value==='emg'?'início do EMG':'marcador')}<small><br>desloc. ${fmt(EP.zeroShiftMs,1)} ms</small></div></div>
+    <div><div class="k">CV da duração</div><div class="v">${fmt(100*burstDurationCV(),0)}<small> %</small></div></div>`;
 }
 
 function emgBurstDuration(){
@@ -1483,6 +1805,110 @@ function emgBurstDuration(){
   let a=pi; while(a>0 && m[a]>th) a--;
   let b=pi; while(b<EP.L-1 && m[b]>th) b++;
   return (b-a)/DATA.fs*1000;
+}
+
+/* CV da duração do burst entre épocas: variabilidade alta de duração e
+   recrutamento favorece origem funcional (Latorre 2025). */
+function burstDurationCV(){
+  if (!EP || isSPLA()) return NaN;
+  const ai=+$('#anchorCh').value;
+  const z0=EP.zeroIdx!==undefined?EP.zeroIdx:EP.pre;
+  const lo=Math.max(0,z0-Math.round(0.05*DATA.fs)), hi=Math.min(EP.L-1,z0+Math.round(0.3*DATA.fs));
+  const durs=[];
+  for (let i=0;i<EP.N;i++){
+    const x=EP.data[i][ai]; if (!x) break;
+    let base=0,c=0; for (let k=EP.iA;k<=EP.iB;k++){ base+=x[k]; c++; } base/=Math.max(1,c);
+    let pk=0,pi=z0; for (let k=lo;k<=hi;k++) if (x[k]>pk){ pk=x[k]; pi=k; }
+    if (pk<=base) continue;
+    const th=base+(pk-base)*0.2;
+    let a=pi; while (a>0 && x[a]>th) a--;
+    let b=pi; while (b<EP.L-1 && x[b]>th) b++;
+    durs.push((b-a)/DATA.fs*1000);
+  }
+  if (durs.length<5) return NaN;
+  const mu=durs.reduce((p,q)=>p+q,0)/durs.length;
+  const sd=Math.sqrt(durs.reduce((p,q)=>p+(q-mu)*(q-mu),0)/(durs.length-1));
+  return mu>0 ? sd/mu : NaN;
+}
+
+/* Região corporal inferida do rótulo do músculo, para as faixas normativas. */
+function regionOf(label){
+  const s=(label||'').toUpperCase();
+  if (/APB|ADM|FDI|1DI|IOD|INTEROSS|LUMBRIC|TENAR|THEN|HAND|MAO|MÃO/.test(s)) return 'mão';
+  if (/FCR|ECR|FCU|ECU|FDS|FDP|EDC|ANTEBR|FOREARM|BRAQUIORRAD|BR\b/.test(s)) return 'antebraço';
+  if (/BIC|TRIC|DELT|PEITORAL|PECT|SUPRA|INFRA|BRACHII/.test(s)) return 'braço/cintura escapular';
+  if (/TIB|GASTRO|GASTR|SOLEO|SOL\b|QUAD|VAST|EDB|FIBULAR|PERON|PERNA|COXA|LEG|TA\b|AH\b|RF\b/.test(s)) return 'membro inferior';
+  if (/ORBIC|OOC|MASSET|MENT|FRONTAL|SCM|ESTERNO|TRAPEZ|TRAP|PARAVERT|ABDOM|AXIAL|GG\b|OO\b/.test(s)) return 'craniano/axial';
+  return null;
+}
+/* Faixas normativas de duração (Latorre 2025; Zutt 2018; Erro 2013), com a
+   advertência de que bursts balísticos normais podem durar < 50 ms —
+   o corte não é específico. */
+function classifyBurst(bd, label){
+  if (!isFinite(bd)) return '';
+  const reg=regionOf(label);
+  let cls;
+  if (bd<50) cls='&lt; 50 ms: compatível com origem cortical — <b>não específico</b>: controles normais geram bursts balísticos &lt; 50 ms, sobretudo em musculatura apendicular';
+  else if (bd<=100) cls='50–100 ms: faixa intermediária';
+  else if (bd<150) cls='&gt; 100 ms: sugere origem subcortical ou funcional';
+  else if (bd<=450) cls='150–450 ms: faixa descrita para mioclonia propriospinal (verificar propagação lenta 5–15 m/s a partir de miótomo torácico e ausência de músculos cranianos)';
+  else cls='&gt; 450 ms: fora das faixas típicas de mioclonia';
+  return cls + (reg?` · região: ${reg}`:' · região não reconhecida pelo rótulo');
+}
+
+/* BP quantificado (Meppelink 2016; Beudel 2018): teste t da inclinação
+   pré-movimento ajustada época a época, em vez do julgamento visual; ponto
+   de inflexão BP precoce/tardio por ajuste de duas retas na média. */
+function quantifyBP(){
+  if (!EP) return null;
+  const ch=+$('#anaCh').value, m=EP.mean[ch];
+  if (!m) return null;
+  const wA=Math.max(EP.time[0]+30,-2000), wB=-50;
+  let iA=-1, iB=-1, iZ=-1;
+  for (let k=0;k<EP.L;k++){
+    if (iA<0 && EP.time[k]>=wA) iA=k;
+    if (EP.time[k]<=wB) iB=k;
+    if (EP.time[k]<=0) iZ=k;
+  }
+  if (iA<0 || iB<=iA || EP.time[iB]-EP.time[iA] < 800)
+    return { na:true, why:'janela pré-evento curta — use a segmentação de BP (−2500/+500 ms)' };
+  const slopes=[];
+  for (let i=0;i<EP.N;i++){
+    const x=EP.data[i][ch];
+    let sx=0,sy=0,sxx=0,sxy=0,c=0;
+    for (let k=iA;k<=iB;k++){ const t=EP.time[k]/1000; sx+=t; sy+=x[k]; sxx+=t*t; sxy+=t*x[k]; c++; }
+    const den=c*sxx-sx*sx;
+    slopes.push(den ? (c*sxy-sx*sy)/den : 0);   // µV/s
+  }
+  const N=slopes.length;
+  const mu=slopes.reduce((p,q)=>p+q,0)/N;
+  const sd=Math.sqrt(slopes.reduce((p,q)=>p+(q-mu)*(q-mu),0)/Math.max(1,N-1));
+  const t = sd>0 ? mu/(sd/Math.sqrt(N)) : 0;
+  const p = tPvalue(t, N-1);
+  let mn=Infinity; for (let k=iA;k<=Math.max(iA,iZ);k++) if (m[k]<mn) mn=m[k];
+  const amp=-mn;                                 // negatividade máxima (µV)
+  const classic = amp>=5 && mu<0;                // critério visual convencional
+  const significant = p<0.05 && mu<0;
+  /* inflexão BP1/BP2 por duas retas (BP2 tipicamente ~400 ms antes do onset) */
+  const sse=(a,b)=>{
+    let sx=0,sy=0,sxx=0,sxy=0,c=0;
+    for (let k=a;k<=b;k++){ sx+=k; sy+=m[k]; sxx+=k*k; sxy+=k*m[k]; c++; }
+    const den=c*sxx-sx*sx, b1=den?(c*sxy-sx*sy)/den:0, b0=(sy-b1*sx)/c;
+    let s=0; for (let k=a;k<=b;k++){ const r=m[k]-(b0+b1*k); s+=r*r; }
+    return s;
+  };
+  const iE=Math.max(iA,iZ);
+  const s1=sse(iA,iE);
+  const step=Math.max(1,Math.round(0.02*DATA.fs));
+  let bestCp=-1, bestS=Infinity;
+  const c0=iA+Math.round(0.15*(iE-iA)), c1=iE-Math.round(0.15*(iE-iA));
+  for (let cp=c0;cp<=c1;cp+=step){
+    const s=sse(iA,cp)+sse(cp,iE);
+    if (s<bestS){ bestS=s; bestCp=cp; }
+  }
+  const bp2 = (bestCp>0 && bestS < s1*0.85) ? EP.time[bestCp] : null;
+  return { na:false, slope:mu, t, p, df:N-1, amp, classic, significant, bp2,
+           wA:EP.time[iA], wB:EP.time[iB] };
 }
 
 /* ---- desenho da média ---- */
@@ -1537,7 +1963,7 @@ function drawAverage(){
     ctx.beginPath(); ctx.moveTo(x,pad.t); ctx.lineTo(x,H-pad.b); ctx.stroke();
     ctx.textAlign='center'; ctx.fillText(t.toFixed(0), x, H-pad.b+14);
   }
-  ctx.textAlign='center'; ctx.fillText('ms em relação ao início do EMG', (pad.l+W-pad.r)/2, H-6);
+  ctx.textAlign='center'; ctx.fillText(zeroLabel(), (pad.l+W-pad.r)/2, H-6);
   // escala vertical
   ctx.textAlign='right';
   const uStep=niceStep(mx/2.2);
@@ -1621,7 +2047,10 @@ function drawRaster(){
   vals.sort((a,b)=>a-b);
   const lim=DSP.percentile(vals,0.97)||1;
   const dark = document.body.dataset.theme==='bench';
-  const img=ctx.createImageData(Math.max(1,Math.round(pw)), Math.max(1,Math.round(ph)));
+  /* putImageData ignora a transformação do contexto: gerar a imagem já em
+     pixels de dispositivo, senão o raster encolhe em telas HiDPI */
+  const dpr=devicePixelRatio||1;
+  const img=ctx.createImageData(Math.max(1,Math.round(pw*dpr)), Math.max(1,Math.round(ph*dpr)));
   const IW=img.width, IH=img.height;
   for (let py=0;py<IH;py++){
     const i=Math.min(N-1, Math.floor(py/IH*N));
@@ -1635,7 +2064,7 @@ function drawRaster(){
       img.data[o]=r; img.data[o+1]=g; img.data[o+2]=b; img.data[o+3]=255;
     }
   }
-  ctx.putImageData(img, Math.round(pad.l), Math.round(pad.t));
+  ctx.putImageData(img, Math.round(pad.l*dpr), Math.round(pad.t*dpr));
   ctx.strokeStyle=C('--mark'); ctx.setLineDash([4,3]); ctx.lineWidth=1.2;
   const x0=xMap(0,pad,W); ctx.beginPath(); ctx.moveTo(x0,pad.t); ctx.lineTo(x0,H-pad.b); ctx.stroke(); ctx.setLineDash([]);
   ctx.fillStyle=C('--ink-soft'); ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
@@ -1644,6 +2073,177 @@ function drawRaster(){
   ctx.textAlign='right'; ctx.fillText('abalo 1', pad.l-5, pad.t+9);
   ctx.fillText('abalo '+N, pad.l-5, H-pad.b-2);
   ctx.textAlign='center'; ctx.fillText(DATA.labels[ch]+' — épocas individuais (ms)', (pad.l+W-pad.r)/2, H-4);
+}
+
+/* Curva de convergência: amplitude dos picos da média cumulativa em função
+   do número de épocas. Decide empiricamente se mais abalos agregariam. */
+function drawConv(){
+  const cv=$('#cvConv'); if (!cv) return;
+  const ctx=cv.getContext('2d');
+  const W=cv.clientWidth||900, H=cv.height;
+  cv.width=Math.round(W*devicePixelRatio);
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  const cs=getComputedStyle(document.body), C=k=>cs.getPropertyValue(k).trim();
+  const pad={l:52,r:14,t:12,b:30};
+  plotFrame(ctx,W,H,C,pad);
+  if (!EP || EP.N<4){
+    ctx.fillStyle=C('--ink-soft'); ctx.font='12px ui-sans-serif'; ctx.textAlign='center';
+    ctx.fillText('Calcule a média para ver a convergência.',W/2,H/2);
+    $('#convMsg').textContent='';
+    return;
+  }
+  const ch=+$('#anaCh').value;
+  const a=+$('#pkA').value, b=+$('#pkB').value;
+  let iA=0,iB=EP.L-1;
+  for (let k=0;k<EP.L;k++){ if (EP.time[k]<=a) iA=k; if (EP.time[k]<=b) iB=k; }
+  const Wn=iB-iA+1;
+  const sum=new Float64Array(Wn);
+  const pos=[], neg=[];
+  for (let i=0;i<EP.N;i++){
+    const x=EP.data[i][ch];
+    for (let k=0;k<Wn;k++) sum[k]+=x[iA+k];
+    let mx=-Infinity, mn=Infinity;
+    for (let k=0;k<Wn;k++){ const v=sum[k]/(i+1); if (v>mx)mx=v; if (v<mn)mn=v; }
+    pos.push(mx); neg.push(mn);
+  }
+  let ymax=1e-6;
+  for (let i=2;i<EP.N;i++){ ymax=Math.max(ymax,Math.abs(pos[i]),Math.abs(neg[i])); }
+  const X=i=>pad.l+(i/(EP.N-1))*(W-pad.l-pad.r);
+  const Y=v=>pad.t+(H-pad.t-pad.b)/2 - v/ymax*((H-pad.t-pad.b)/2*0.88);
+  ctx.strokeStyle=C('--grid'); ctx.beginPath(); ctx.moveTo(pad.l,Y(0)); ctx.lineTo(W-pad.r,Y(0)); ctx.stroke();
+  ctx.font='10px ui-monospace,monospace'; ctx.fillStyle=C('--ink-soft'); ctx.textAlign='center';
+  const stp=Math.max(1,niceStep(EP.N/8));
+  for (let n=stp;n<=EP.N;n+=stp){
+    const x=X(n-1);
+    ctx.strokeStyle=C('--grid'); ctx.beginPath(); ctx.moveTo(x,pad.t); ctx.lineTo(x,H-pad.b); ctx.stroke();
+    ctx.fillText(String(Math.round(n)), x, H-pad.b+14);
+  }
+  ctx.textAlign='right'; ctx.fillText(ymax.toFixed(1)+' µV', pad.l-4, pad.t+10);
+  [[pos,'--trace'],[neg,'--trace-3']].forEach(([arr,col])=>{
+    ctx.strokeStyle=C(col); ctx.lineWidth=1.6; ctx.beginPath();
+    for (let i=2;i<EP.N;i++){ const x=X(i), y=Y(arr[i]); i===2?ctx.moveTo(x,y):ctx.lineTo(x,y); }
+    ctx.stroke();
+    ctx.setLineDash([3,3]); ctx.globalAlpha=.6; ctx.beginPath();
+    ctx.moveTo(pad.l,Y(arr[EP.N-1])); ctx.lineTo(W-pad.r,Y(arr[EP.N-1])); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha=1;
+  });
+  ctx.fillStyle=C('--ink-soft'); ctx.textAlign='center';
+  ctx.fillText('número acumulado de épocas', (pad.l+W-pad.r)/2, H-4);
+  const tail=pos.slice(Math.max(3,Math.floor(pos.length*0.8)));
+  const rng=Math.max(...tail)-Math.min(...tail);
+  const rel=Math.abs(pos[pos.length-1])>1e-9 ? rng/Math.abs(pos[pos.length-1]) : 1;
+  $('#convMsg').innerHTML = rel<0.1
+    ? `A amplitude do pico varia ${fmt(100*rel,0)}% nas últimas épocas: a média <b>estabilizou</b> — mais eventos dificilmente mudarão o resultado.`
+    : `A amplitude do pico ainda varia ${fmt(100*rel,0)}% nas últimas épocas: a média <b>não estabilizou</b> — mais abalos agregariam informação (a literatura emprega de 50 a 200 eventos).`;
+}
+
+/* Salvaguardas contra artefato (usadas pela topografia e pelo laudo). */
+function topoChecks(){
+  if (!EP || !EP.peaks) return null;
+  const eegIdx=DATA.types.map((t,i)=>t==='EEG'?i:-1).filter(i=>i>=0);
+  const known=eegIdx.filter(i=>topoPos(DATA.labels[i]));
+  const idxAt=t=>{ let bi=0,bd=Infinity; for (let k=0;k<EP.L;k++){ const d=Math.abs(EP.time[k]-t); if (d<bd){bd=d;bi=k;} } return bi; };
+  const ip=idxAt(EP.peaks.pos.t), inn=idxAt(EP.peaks.neg.t);
+  const vp={}, vn={};
+  for (const i of eegIdx){ vp[i]=EP.mean[i][ip]; vn[i]=EP.mean[i][inn]; }
+  /* inversão de polaridade no pico positivo */
+  let inversion=null;
+  if (known.length>=4){
+    let mx=0, mxi=-1;
+    for (const i of known) if (Math.abs(vp[i])>mx){ mx=Math.abs(vp[i]); mxi=i; }
+    if (mxi>=0 && mx>0){
+      const sgn=Math.sign(vp[mxi]);
+      inversion = known.some(i=>Math.sign(vp[i])===-sgn && Math.abs(vp[i])>0.25*mx);
+    }
+  }
+  /* correlação amplitude do transiente × amplitude do burst entre épocas */
+  const ai=+$('#anchorCh').value, ch=EP.peaks.ch;
+  let ampCorr=NaN;
+  if (EP.data[0] && EP.data[0][ai]){
+    const eeg=[], emg=[];
+    const h=Math.max(1,Math.round(0.005*DATA.fs));
+    const z0=EP.zeroIdx!==undefined?EP.zeroIdx:EP.pre;
+    const e1=Math.min(EP.L-1, z0+Math.round(0.06*DATA.fs));
+    for (let i=0;i<EP.N;i++){
+      let s=0,c=0;
+      for (let k=Math.max(0,ip-h);k<=Math.min(EP.L-1,ip+h);k++){ s+=EP.data[i][ch][k]; c++; }
+      eeg.push(s/Math.max(1,c));
+      let mxb=0;
+      for (let k=z0;k<=e1;k++) if (EP.data[i][ai][k]>mxb) mxb=EP.data[i][ai][k];
+      emg.push(mxb);
+    }
+    ampCorr=pearson(eeg,emg);
+  }
+  const precede = EP.peaks.pos.t <= -Math.max(5, isFinite(EP.jitter)?EP.jitter:0);
+  return { known, vp, vn, ip, inn, inversion, ampCorr, precede };
+}
+
+/* Mapas topográficos esquemáticos nos dois picos + salvaguardas. */
+function drawTopo(){
+  const cv=$('#cvTopo'); if (!cv) return;
+  const ctx=cv.getContext('2d');
+  const W=cv.clientWidth||900, H=cv.height;
+  cv.width=Math.round(W*devicePixelRatio);
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  const cs=getComputedStyle(document.body), C=k=>cs.getPropertyValue(k).trim();
+  ctx.clearRect(0,0,W,H);
+  const chk=topoChecks();
+  if (!chk){
+    ctx.fillStyle=C('--ink-soft'); ctx.font='12px ui-sans-serif'; ctx.textAlign='center';
+    ctx.fillText('Calcule a média e os picos para ver a topografia.',W/2,H/2);
+    $('#topoMsg').innerHTML='';
+    return;
+  }
+  if (chk.known.length<4){
+    ctx.fillStyle=C('--ink-soft'); ctx.font='12px ui-sans-serif'; ctx.textAlign='center';
+    ctx.fillText('Rotulagem 10-20 não reconhecida em canais suficientes — topografia indisponível.',W/2,H/2);
+  } else {
+    const dark=document.body.dataset.theme==='bench';
+    let mx=1e-9;
+    for (const i of chk.known) mx=Math.max(mx,Math.abs(chk.vp[i]),Math.abs(chk.vn[i]));
+    const heads=[
+      { vals:chk.vp, title:`pico positivo · ${fmt(EP.peaks.pos.t,0)} ms`, cx:W*0.28 },
+      { vals:chk.vn, title:`pico negativo · ${fmt(EP.peaks.neg.t,0)} ms`, cx:W*0.72 }
+    ];
+    const cy=H/2-6, R=Math.min(H/2-30, W*0.18);
+    for (const hd of heads){
+      ctx.strokeStyle=C('--rule'); ctx.lineWidth=1.2;
+      ctx.beginPath(); ctx.arc(hd.cx,cy,R,0,6.29); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(hd.cx-6,cy-R+1); ctx.lineTo(hd.cx,cy-R-8); ctx.lineTo(hd.cx+6,cy-R+1); ctx.stroke();
+      for (const i of chk.known){
+        const p=topoPos(DATA.labels[i]);
+        const x=hd.cx+p[0]*R*0.78, y=cy+p[1]*R*0.78;
+        const v=hd.vals[i], u=Math.max(-1,Math.min(1,v/mx));
+        let r,g,b;
+        if (u>=0){ const q=u; r=dark?20+q*235:255-q*30; g=dark?30+q*120:255-q*175; b=dark?45+q*40:255-q*195; }
+        else { const q=-u; r=dark?20+q*40:255-q*205; g=dark?30+q*140:255-q*145; b=dark?45+q*215:255-q*40; }
+        const rad=4+9*Math.abs(u);
+        ctx.fillStyle=`rgb(${r|0},${g|0},${b|0})`;
+        ctx.beginPath(); ctx.arc(x,y,rad,0,6.29); ctx.fill();
+        ctx.strokeStyle=C('--rule'); ctx.lineWidth=.7; ctx.stroke();
+        ctx.fillStyle=C('--ink-soft'); ctx.font='9px ui-monospace,monospace'; ctx.textAlign='center';
+        ctx.fillText(DATA.labels[i], x, y-rad-3);
+      }
+      ctx.fillStyle=C('--ink'); ctx.font='600 11px ui-sans-serif,sans-serif'; ctx.textAlign='center';
+      ctx.fillText(hd.title, hd.cx, H-8);
+    }
+    ctx.fillStyle=C('--ink-soft'); ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
+    ctx.fillText(`escala ± ${mx.toFixed(1)} µV · vermelho + · azul −`, W/2, 14);
+  }
+  const items=[];
+  const tag=(ok,pos_,neg_)=> ok===null?'<span class="tag">não avaliado</span>':(ok?`<span class="tag ok">${pos_}</span>`:`<span class="tag no">${neg_}</span>`);
+  items.push(`${tag(chk.inversion,'inversão presente','sem inversão')} <b>Inversão de polaridade no escalpo:</b> ${
+    chk.inversion===null?'canais 10-20 insuficientes.':(chk.inversion
+      ?'presente — compatível com gerador cortical focal (Pollini 2024).'
+      :'ausente — um transiente que não inverte polaridade através do escalpo merece desconfiança de artefato (miogênico, referência ou movimento).')}`);
+  items.push(`${tag(isFinite(chk.ampCorr)?Math.abs(chk.ampCorr)<0.5:null,'independente do burst','acompanha o burst')} <b>Correlação amplitude do transiente × amplitude do burst:</b> r = ${fmt(chk.ampCorr,2)} ${
+    isFinite(chk.ampCorr)&&Math.abs(chk.ampCorr)>=0.5?'— o transiente cresce com o EMG através das épocas: considere contaminação miogênica.':'— sem dependência relevante.'}`);
+  items.push(`${tag(chk.precede,'precede com margem','margem insuficiente')} <b>Precedência vs jitter:</b> pico positivo a ${fmt(EP.peaks.pos.t,0)} ms com jitter de ${fmt(EP.jitter,1)} ms — ${
+    chk.precede?'o transiente precede o EMG por margem maior que o jitter.':'a margem não supera o jitter de alinhamento; o acoplamento temporal é incerto.'}`);
+  $('#topoMsg').innerHTML =
+    `<div class="verdict ${ (chk.inversion===false||(isFinite(chk.ampCorr)&&Math.abs(chk.ampCorr)>=0.5)||!chk.precede) ? 'pos':'neg'}">`+
+    items.map(s=>`<div style="margin:3px 0">${s}</div>`).join('')+
+    `<div class="note" style="margin-top:6px">Lembrete: um JLBA de EEG negativo não exclui gerador cortical — a MEG é mais eficaz em isolar o transiente pré-mioclônico (Mima 1998).</div></div>`;
 }
 
 function renderMuscleTable(){
@@ -1674,7 +2274,22 @@ function renderMuscleTable(){
       <td class="num mono">${fmt(r.amp,1)}</td></tr>`).join('')}
     </tbody></table>
     <div class="note" style="margin-top:8px">Início medido a 20% da amplitude do pico sobre a média retificada.
-    Progressão crânio-caudal rápida sugere gerador reticular; propagação lenta bidirecional a partir de um miótomo médio sugere origem propriospinal.</div>`;
+    Progressão crânio-caudal rápida sugere gerador reticular; propagação lenta bidirecional a partir de um miótomo médio sugere origem propriospinal.</div>
+    ${ref?`<div class="note" style="margin-top:6px"><b>Duração do burst da âncora:</b> ${fmt(ref.dur,0)} ms — ${classifyBurst(ref.dur, DATA.labels[ai])}.</div>`:''}`;
+
+  /* músculo recrutado mais precocemente deve ser a âncora (Shibasaki/Hallett) */
+  if (!isSPLA() && rows.length>1 && ref){
+    const first=rows.reduce((p,q)=> q.on<p.on ? q : p, rows[0]);
+    if (first.ch!==ai && first.on < ref.on-2){
+      $('#musTab').insertAdjacentHTML('beforeend',
+        `<div class="verdict" style="margin-top:10px">O músculo recrutado primeiro é <b>${DATA.labels[first.ch]}</b>
+         (${fmt(first.on-ref.on,1)} ms antes da âncora atual). A literatura recomenda ancorar no músculo ativado
+         mais precocemente, para ver o que acontece antes do movimento.
+         <button class="sm" id="btnAnchorSug" data-ch="${first.ch}" style="margin-left:8px">Usar como âncora e refazer</button></div>`);
+      const bs=$('#btnAnchorSug');
+      if (bs) bs.onclick=()=>{ $('#anchorCh').value=bs.dataset.ch; runDetect(); computeAverage(); };
+    }
+  }
 }
 
 /* ==========================================================================
@@ -1874,6 +2489,290 @@ function drawStat(){
 }
 
 /* ==========================================================================
+   8b · ERD — DECOMPOSIÇÃO TEMPO-FREQUÊNCIA (13–45 Hz)
+   Meppelink 2016; Beudel 2018. Morlet (7 ciclos) via FFT; logRatio por época
+   contra a linha de base; teste t de uma amostra por bin; correção por
+   permutação (inversão de sinal) no nível de cluster.
+   ========================================================================== */
+async function runERD(){
+  if (!MARKERS.length){ $('#erdMsg').textContent='Detecte os abalos primeiro.'; return; }
+  const fs=DATA.fs, ch=+$('#anaCh').value;
+  const src=DATA.proc[ch];
+  if (!src){ $('#erdMsg').textContent='Canal de análise inválido.'; return; }
+  const halfS=Math.max(2,Math.min(10,+$('#erdWin').value||6));
+  const pre=Math.round(halfS*fs), post=pre, L=pre+post+1;
+  let blA=+$('#erdBlA').value, blB=+$('#erdBlB').value;
+  if (!(blB>blA)){ blA=-5; blB=-4; }
+  const f1=13;
+  let f2=45;
+  if (f2 >= fs/2*0.95){ f2=Math.floor(fs/2*0.9); }
+  if (f2<=f1+4){ $('#erdMsg').textContent='Taxa de amostragem baixa demais para a banda 13–45 Hz.'; return; }
+  const freqs=[]; for (let f=f1;f<=f2;f+=2) freqs.push(f);
+  const nf=freqs.length;
+  /* borda: cada época é extraída com folga de dados reais dos dois lados,
+     e só o miolo entra na análise — evita a queda espúria de potência nos
+     extremos causada pelo suporte do wavelet */
+  const padS=Math.round(0.6*fs);
+  const marks=MARKERS.map(m=>Math.round(m)).filter(c=>c-pre-padS>=0 && c+post+padS<DATA.n);
+  const N=marks.length;
+  if (N<8){ $('#erdMsg').textContent=`Apenas ${N} época(s) de ±${halfS} s cabem no registro — mínimo 8. Reduza a janela ou registre mais.`; return; }
+  const isiM=marks.length>1 ? DSP.median(marks.slice(1).map((m,i)=>(m-marks[i])/fs)) : Infinity;
+  const overlap = isiM < 2*halfS;
+  const nPerm=Math.max(100,Math.round(+$('#erdPerm').value)||200);
+
+  const prog=$('#erdProg'), bar=prog.querySelector('i');
+  prog.classList.add('on'); $('#btnERD').disabled=true;
+  $('#erdMsg').textContent='Decomposição tempo-frequência…';
+
+  const Lx=L+2*padS;
+  const NF=DSP.nextPow2(Lx+Math.round(fs));     // padding ≥ 1 s contra wrap-around
+  const nb=Math.max(60,Math.min(400,Math.round((L/fs)*20)));   // bins de ~50 ms
+  const binIdx=new Int32Array(L);
+  for (let k=0;k<L;k++) binIdx[k]=Math.min(nb-1, Math.floor(k*nb/L));
+  const binT=b=>((b+0.5)*L/nb - pre)/fs*1000;   // centro do bin, em ms
+  let blMask=Array.from({length:nb},(_,b)=>{ const t=binT(b)/1000; return t>=blA && t<=blB; });
+  if (!blMask.some(Boolean)) blMask=Array.from({length:nb},(_,b)=>binT(b)/1000 < -halfS*0.66);
+
+  /* kernels de Morlet no domínio da frequência (gaussianas; fator 2 = sinal analítico) */
+  const kern=freqs.map(f0=>{
+    const sf=f0/7;
+    const Hh=new Float32Array(NF);
+    for (let k=0;k<=NF/2;k++){
+      const fk=k*fs/NF;
+      Hh[k]=2*Math.exp(-0.5*Math.pow((fk-f0)/sf,2));
+    }
+    Hh[0]/=2; Hh[NF/2]/=2;
+    return Hh;
+  });
+
+  const nbins=nf*nb;
+  const epLR=[];
+  const xre=new Float64Array(NF), xim=new Float64Array(NF);
+  const re=new Float64Array(NF), im=new Float64Array(NF);
+  const accB=new Float64Array(nb), cntB=new Float64Array(nb);
+  for (let e=0;e<N;e++){
+    const a0=marks[e]-pre-padS;
+    let mu=0; for (let k=0;k<Lx;k++) mu+=src[a0+k]; mu/=Lx;
+    xre.fill(0); xim.fill(0);
+    for (let k=0;k<Lx;k++) xre[k]=src[a0+k]-mu;
+    DSP.fft(xre,xim);
+    const P=new Float32Array(nbins);
+    for (let fi=0;fi<nf;fi++){
+      const Hh=kern[fi];
+      for (let k=0;k<NF;k++){ re[k]=xre[k]*Hh[k]; im[k]=xim[k]*Hh[k]; }
+      DSP.ifft(re,im);
+      accB.fill(0); cntB.fill(0);
+      for (let k=0;k<L;k++){ const b=binIdx[k], q=k+padS; accB[b]+=re[q]*re[q]+im[q]*im[q]; cntB[b]++; }
+      for (let b=0;b<nb;b++) P[fi*nb+b]=accB[b]/Math.max(1,cntB[b]);
+    }
+    for (let fi=0;fi<nf;fi++){
+      /* correção em log (média do log da potência na base): ao contrário do
+         log da potência média, tem esperança nula sob estacionariedade e não
+         enviesa o teste t contra zero */
+      for (let b=0;b<nb;b++) P[fi*nb+b]=Math.log10(Math.max(1e-12,P[fi*nb+b]));
+      let base=0,c=0;
+      for (let b=0;b<nb;b++) if (blMask[b]){ base+=P[fi*nb+b]; c++; }
+      base/=Math.max(1,c);
+      for (let b=0;b<nb;b++) P[fi*nb+b]-=base;
+    }
+    epLR.push(P);
+    bar.style.width=(e/N*60)+'%';
+    if (e%3===0) await sleep();
+  }
+
+  /* estatística por bin e clusters observados */
+  const sum=new Float64Array(nbins), sumsq=new Float64Array(nbins);
+  for (const P of epLR) for (let i=0;i<nbins;i++){ sum[i]+=P[i]; sumsq[i]+=P[i]*P[i]; }
+  const mLR=new Float32Array(nbins), tmap=new Float32Array(nbins);
+  for (let i=0;i<nbins;i++){
+    const mu=sum[i]/N, v=(sumsq[i]-N*mu*mu)/Math.max(1,N-1);
+    mLR[i]=mu; tmap[i]=mu/Math.sqrt(Math.max(1e-12,v)/N);
+  }
+  const tc=tCrit(N-1);
+  const findClusters=tv=>{
+    const lab=new Int32Array(nbins).fill(-1), cls=[];
+    for (let i=0;i<nbins;i++){
+      if (lab[i]>=0 || Math.abs(tv[i])<=tc) continue;
+      const sgn=Math.sign(tv[i]);
+      const stack=[i]; lab[i]=cls.length;
+      let mass=0; const members=[];
+      while (stack.length){
+        const q=stack.pop(); members.push(q); mass+=Math.abs(tv[q]);
+        const fi=(q/nb)|0, b=q%nb, nbs=[];
+        if (b>0) nbs.push(q-1);
+        if (b<nb-1) nbs.push(q+1);
+        if (fi>0) nbs.push(q-nb);
+        if (fi<nf-1) nbs.push(q+nb);
+        for (const w of nbs)
+          if (lab[w]<0 && Math.abs(tv[w])>tc && Math.sign(tv[w])===sgn){ lab[w]=cls.length; stack.push(w); }
+      }
+      cls.push({mass, members, sgn});
+    }
+    return cls;
+  };
+  const obs=findClusters(tmap);
+
+  $('#erdMsg').textContent='Permutações…';
+  const maxMass=new Float64Array(nPerm);
+  const psum=new Float64Array(nbins), tperm=new Float32Array(nbins);
+  for (let p=0;p<nPerm;p++){
+    psum.fill(0);
+    for (let e=0;e<N;e++){
+      const P=epLR[e], s=Math.random()<0.5?-1:1;
+      for (let i=0;i<nbins;i++) psum[i]+=s*P[i];
+    }
+    for (let i=0;i<nbins;i++){
+      const mu=psum[i]/N, v=(sumsq[i]-N*mu*mu)/Math.max(1,N-1);
+      tperm[i]=mu/Math.sqrt(Math.max(1e-12,v)/N);
+    }
+    const cl=findClusters(tperm);
+    maxMass[p]=cl.length ? Math.max(...cl.map(c=>c.mass)) : 0;
+    if (p%10===0){ bar.style.width=(60+p/nPerm*38)+'%'; await sleep(); }
+  }
+  const sig=new Uint8Array(nbins);
+  const clusters=[];
+  for (const c of obs){
+    let ge=0; for (const mv of maxMass) if (mv>=c.mass) ge++;
+    const pv=(ge+1)/(nPerm+1);
+    if (pv<0.05){
+      let fMin=1e9,fMax=-1e9,tMin=1e9,tMax=-1e9,s=0;
+      for (const q of c.members){
+        sig[q]=1;
+        const fi=(q/nb)|0, b=q%nb;
+        fMin=Math.min(fMin,freqs[fi]); fMax=Math.max(fMax,freqs[fi]);
+        tMin=Math.min(tMin,binT(b)); tMax=Math.max(tMax,binT(b));
+        s+=mLR[q];
+      }
+      clusters.push({ p:pv, sgn:c.sgn, fA:fMin, fB:fMax, tA:tMin, tB:tMax, meanLR:s/c.members.length });
+    }
+  }
+
+  /* curva 31–45 Hz ± EPM */
+  const hiIdx=freqs.map((f,i)=>f>=31?i:-1).filter(i=>i>=0);
+  const curve=new Float32Array(nb), csem=new Float32Array(nb);
+  const tmpv=new Float64Array(N);
+  for (let b=0;b<nb;b++){
+    for (let e=0;e<N;e++){
+      let s=0; for (const fi of hiIdx) s+=epLR[e][fi*nb+b];
+      tmpv[e]=s/Math.max(1,hiIdx.length);
+    }
+    let mu=0; for (let e=0;e<N;e++) mu+=tmpv[e]; mu/=N;
+    let vv=0; for (let e=0;e<N;e++){ const d=tmpv[e]-mu; vv+=d*d; }
+    curve[b]=mu; csem[b]=Math.sqrt(vv/Math.max(1,N-1))/Math.sqrt(N);
+  }
+
+  /* ERD pré-abalo: cluster negativo sobrepondo [−2000, 0] ms */
+  const sigPre = clusters.some(c=>c.sgn<0 && c.meanLR<0 && c.tA<=0 && c.tB>=-2000);
+  const times=Array.from({length:nb},(_,b)=>binT(b));
+  ERD={ freqs, nb, times, N, mLR, tmap, sig, clusters, curve, csem,
+        halfS, blA, blB, nPerm, ch, overlap, sigPre };
+  PARAMS.erd={ halfS, blA, blB, nPerm, band:[f1,f2], nEpochs:N, channel:DATA.labels[ch] };
+  bar.style.width='100%';
+  $('#erdMsg').textContent=`${N} épocas · ${clusters.length} cluster(s) significativo(s).`+(overlap?' Atenção: épocas sobrepostas (intervalo mediano menor que a janela).':'');
+  drawERD(); renderERDVerdict(); renderReport(); renderVerdict();
+  setTimeout(()=>{ prog.classList.remove('on'); bar.style.width='0%'; },400);
+  $('#btnERD').disabled=false;
+}
+
+function renderERDVerdict(){
+  if (!ERD){ $('#erdVerdict').innerHTML=''; return; }
+  const v = ERD.sigPre
+    ? { cls:'pos', txt:`<b>ERD beta/gama pré-abalo significativa em ${DATA.labels[ERD.ch]}.</b> Dessincronização antes do movimento favorece origem funcional: sensibilidade de ~65% contra ~25% do BP testado estatisticamente (Meppelink 2016), com ganho diagnóstico adicional sem perda de especificidade quando combinada ao BP (Beudel 2018). Não descrita em mioclonia cortical orgânica nas séries citadas.` }
+    : { cls:'neg', txt:`<b>Sem dessincronização beta/gama significativa antes do abalo.</b> A ausência de ERD não exclui origem funcional (sensibilidade ~65%); combine com o BP quantificado e o restante da matriz de achados.` };
+  const extra = ERD.overlap ? ' <br><b>Ressalva:</b> o intervalo entre abalos é menor que a janela de ±'+ERD.halfS+' s — épocas sobrepostas contaminam a linha de base; interprete com cautela.' : '';
+  $('#erdVerdict').innerHTML=`<div class="verdict ${v.cls}">${v.txt}${extra}</div>`;
+}
+
+function drawERD(){
+  const cv=$('#cvERD'); if (!cv) return;
+  const ctx=cv.getContext('2d');
+  const W=cv.clientWidth||900, H=cv.height;
+  cv.width=Math.round(W*devicePixelRatio);
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  const cs=getComputedStyle(document.body), C=k=>cs.getPropertyValue(k).trim();
+  ctx.clearRect(0,0,W,H);
+  if (!ERD){
+    ctx.fillStyle=C('--ink-soft'); ctx.font='12px ui-sans-serif'; ctx.textAlign='center';
+    ctx.fillText('Execute a análise de ERD.',W/2,H/2);
+    return;
+  }
+  const pad={l:52,r:14,t:12,b:26};
+  const mapH=(H-pad.t-pad.b)*0.62, gapH=18;
+  const curH=(H-pad.t-pad.b)-mapH-gapH;
+  const {freqs,nb,times,mLR,sig,curve,csem}=ERD;
+  const nf=freqs.length;
+  const t0=times[0], t1=times[nb-1];
+  const X=t=>pad.l+(t-t0)/(t1-t0)*(W-pad.l-pad.r);
+  /* mapa (em pixels de dispositivo, como no raster) */
+  const dpr=devicePixelRatio||1;
+  const pw=Math.max(1,Math.round((W-pad.l-pad.r)*dpr)), ph=Math.max(1,Math.round(mapH*dpr));
+  let mx=1e-9;
+  { const v=[]; for (let i=0;i<mLR.length;i++) v.push(Math.abs(mLR[i]));
+    v.sort((a,b)=>a-b); mx=DSP.percentile(v,0.98)||1e-9; }
+  const dark=document.body.dataset.theme==='bench';
+  const img=ctx.createImageData(pw,ph);
+  for (let py=0;py<ph;py++){
+    const fi=Math.min(nf-1, nf-1 - Math.floor(py/ph*nf));   // frequência cresce para cima
+    for (let px=0;px<pw;px++){
+      const b=Math.min(nb-1, Math.floor(px/pw*nb));
+      const v=Math.max(-1,Math.min(1, mLR[fi*nb+b]/mx));
+      let r,g,bl;
+      if (v>=0){ const u=v; r=dark?20+u*235:255-u*30; g=dark?30+u*120:255-u*175; bl=dark?45+u*40:255-u*195; }
+      else { const u=-v; r=dark?20+u*40:255-u*205; g=dark?30+u*140:255-u*145; bl=dark?45+u*215:255-u*40; }
+      const isSig=sig[fi*nb+b];
+      const o=(py*pw+px)*4;
+      img.data[o]=r; img.data[o+1]=g; img.data[o+2]=bl;
+      img.data[o+3]=isSig?255:120;                          // não significativo esmaecido
+    }
+  }
+  ctx.putImageData(img, Math.round(pad.l*dpr), Math.round(pad.t*dpr));
+  ctx.strokeStyle=C('--rule'); ctx.strokeRect(pad.l+.5,pad.t+.5,W-pad.l-pad.r,mapH);
+  /* contorno dos clusters significativos (caixas), no mesmo mapeamento do mapa */
+  const yOfF=(f,edge)=>{                       // edge 0 = topo da linha, 1 = base
+    const fi=freqs.indexOf(f);
+    const i=fi<0 ? Math.round((f-freqs[0])/2) : fi;
+    return pad.t + (nf-1-i+ (edge?1:0))/nf*mapH;
+  };
+  ctx.strokeStyle=C('--mark'); ctx.setLineDash([4,3]); ctx.lineWidth=1.2;
+  for (const c of ERD.clusters){
+    const x0=X(c.tA), x1=X(c.tB);
+    const yTop=yOfF(c.fB,0), yBot=yOfF(c.fA,1);
+    ctx.strokeRect(x0,yTop,Math.max(2,x1-x0),Math.max(2,yBot-yTop));
+  }
+  ctx.setLineDash([]);
+  /* eixos do mapa */
+  ctx.fillStyle=C('--ink-soft'); ctx.font='10px ui-monospace,monospace'; ctx.textAlign='right';
+  for (const f of [15,25,35,45]){
+    if (f<freqs[0]||f>freqs[nf-1]) continue;
+    ctx.fillText(f+' Hz', pad.l-4, yOfF(f,0)+ mapH/nf/2 +3);
+  }
+  /* t = 0 */
+  const xz=X(0);
+  ctx.strokeStyle=C('--mark'); ctx.setLineDash([4,3]); ctx.lineWidth=1.2;
+  ctx.beginPath(); ctx.moveTo(xz,pad.t); ctx.lineTo(xz,H-pad.b); ctx.stroke(); ctx.setLineDash([]);
+  /* curva 31–45 Hz */
+  const cy0=pad.t+mapH+gapH, cyH=curH;
+  let cmx=1e-9;
+  for (let b=0;b<nb;b++) cmx=Math.max(cmx,Math.abs(curve[b])+csem[b]);
+  const Y=v=>cy0+cyH/2 - v/cmx*(cyH/2*0.88);
+  ctx.strokeStyle=C('--rule'); ctx.strokeRect(pad.l+.5,cy0+.5,W-pad.l-pad.r,cyH);
+  ctx.strokeStyle=C('--grid'); ctx.beginPath(); ctx.moveTo(pad.l,Y(0)); ctx.lineTo(W-pad.r,Y(0)); ctx.stroke();
+  ctx.fillStyle=C('--trace'); ctx.globalAlpha=.16; ctx.beginPath();
+  for (let b=0;b<nb;b++){ const x=X(times[b]); b?ctx.lineTo(x,Y(curve[b]+csem[b])):ctx.moveTo(x,Y(curve[b]+csem[b])); }
+  for (let b=nb-1;b>=0;b--) ctx.lineTo(X(times[b]),Y(curve[b]-csem[b]));
+  ctx.closePath(); ctx.fill(); ctx.globalAlpha=1;
+  ctx.strokeStyle=C('--trace'); ctx.lineWidth=1.6; ctx.beginPath();
+  for (let b=0;b<nb;b++){ const x=X(times[b]); b?ctx.lineTo(x,Y(curve[b])):ctx.moveTo(x,Y(curve[b])); }
+  ctx.stroke();
+  ctx.fillStyle=C('--ink-soft'); ctx.font='10px ui-monospace,monospace'; ctx.textAlign='left';
+  ctx.fillText('logRatio 31–45 Hz ± EPM', pad.l+5, cy0+12);
+  ctx.textAlign='center';
+  const st=niceStep((t1-t0)/9);
+  for (let t=Math.ceil(t0/st)*st;t<=t1;t+=st) ctx.fillText((t/1000).toFixed(1)+' s', X(t), H-pad.b+14);
+  ctx.fillText(zeroLabel().replace('ms','s'), (pad.l+W-pad.r)/2, H-2);
+}
+
+/* ==========================================================================
    9 · PICOS, INTERPRETAÇÃO, RELATÓRIO
    ========================================================================== */
 function computePeaks(){
@@ -1885,7 +2784,7 @@ function computePeaks(){
   let pv=-Infinity,pi=iA,nv=Infinity,ni=iA;
   for (let k=iA;k<=iB;k++){ if(m[k]>pv){pv=m[k];pi=k;} if(m[k]<nv){nv=m[k];ni=k;} }
   EP.peaks={ pos:{t:EP.time[pi], v:pv}, neg:{t:EP.time[ni], v:nv}, ch, win:[a,b] };
-  renderReport(); renderVerdict(); drawAverage();
+  renderReport(); renderVerdict(); drawAverage(); drawConv(); drawTopo();
 }
 
 function classify(){
@@ -1896,44 +2795,98 @@ function classify(){
   const sigNear = sig ? sig.filter(c=> c.b>=-1500 && c.a<=30) : null;
   const hasSig = sigNear && sigNear.length>0;
   let earliest = hasSig ? Math.min(...sigNear.map(c=>c.a)) : null;
+  const bpq = quantifyBP();
+  const cvDur = burstDurationCV();
+  const chk = topoChecks();
 
   let verdict, cls, why=[];
   const cortical = inWin(P.pos.t,-45,-5) && Math.abs(P.pos.v)>Math.abs(P.neg.v)*0.5;
-  const bpLike = earliest!==null && earliest < -400 && P.neg.v < 0 && Math.abs(P.neg.v) > Math.abs(P.pos.v);
+  const bpLike = (earliest!==null && earliest < -400 && P.neg.v < 0 && Math.abs(P.neg.v) > Math.abs(P.pos.v))
+              || (bpq && !bpq.na && bpq.significant && bpq.classic);
 
-  if (STATS && !hasSig){
+  if (isSPLA()){
+    if (STATS && hasSig && inWin(P.pos.t,-60,5) && P.pos.v>0){
+      cls='pos';
+      verdict='Onda aguda positiva precedendo o período silente — compatível com mioclonia negativa de origem cortical.';
+      why.push(`Pico positivo de ${fmt(P.pos.v,2)} µV a ${fmt(P.pos.t,0)} ms do início do silêncio (Ugawa 1989: o correlato cortical relaciona-se ao início, não ao fim, do silêncio).`);
+    } else if (STATS && !hasSig){
+      cls='neg';
+      verdict='Nenhum correlato EEG significativo travado no período silente.';
+      why.push('Considere asterixis de origem subcortical/metabólica; compare também a média travada no fim do silêncio, que se relaciona ao movimento visível.');
+    } else {
+      cls='neg';
+      verdict='Média travada no período silente calculada — execute a validação para leitura definitiva.';
+    }
+    if (SIL && SIL.nPosPre) why.push(`Mioclonia positiva precedeu o silêncio em ${SIL.nPosPre} evento(s) — combinação frequente que sustenta origem cortical (Pollini 2024).`);
+  } else if (STATS && !hasSig){
     cls='neg';
     verdict='Nenhum transiente EEG time-locked significativo na janela analisada.';
     why.push('A média não sai do envelope nulo gerado por gatilhos aleatórios, portanto o achado não sustenta um gerador cortical.');
     why.push('Considere origem subcortical, reticular ou espinhal, e confirme com a duração do burst e o padrão de recrutamento muscular.');
+    why.push('Lembrete: o JLBA negativo não exclui gerador cortical — limitação intrínseca da EEG (a MEG é mais eficaz; Mima 1998), artefatos, baixa frequência ou alta frequência/amplitude dos abalos podem inviabilizá-lo (Latorre 2023).');
   } else if (bpLike){
     cls='pos';
     verdict='Negatividade lenta pré-movimento compatível com Bereitschaftspotential.';
-    why.push(`A atividade significativa começa em ${fmt(earliest,0)} ms, com pico negativo de ${fmt(P.neg.v,2)} µV a ${fmt(P.neg.t,0)} ms.`);
+    if (earliest!==null) why.push(`A atividade significativa começa em ${fmt(earliest,0)} ms, com pico negativo de ${fmt(P.neg.v,2)} µV a ${fmt(P.neg.t,0)} ms.`);
+    if (bpq && !bpq.na) why.push(`BP quantificado: inclinação de ${fmt(bpq.slope,2)} µV/s (t=${fmt(bpq.t,2)}, p=${bpq.p<0.001?'<0,001':fmt(bpq.p,3)}); negatividade máxima de ${fmt(bpq.amp,1)} µV${bpq.bp2!==null?`; inflexão BP tardio em ${fmt(bpq.bp2,0)} ms`:''}.`);
     why.push('Um BP precedendo movimentos involuntários é o achado buscado em mioclonia funcional. Confirme com registro de movimentos voluntários como controle positivo.');
   } else if (cortical){
     cls='pos';
     verdict='Espícula pré-mioclônica com latência compatível com mioclonia cortical.';
     why.push(`Pico positivo de ${fmt(P.pos.v,2)} µV a ${fmt(P.pos.t,0)} ms do início do EMG; componente negativa de ${fmt(P.neg.v,2)} µV a ${fmt(P.neg.t,0)} ms.`);
-    why.push('A referência clássica é um pico positivo cerca de 20 ms antes do EMG para músculo distal da mão; latências maiores são esperadas em músculos proximais e membro inferior.');
-    if (isFinite(bd)) why.push(`Duração do burst EMG de ${fmt(bd,0)} ms ${bd<50?'reforça':'não reforça'} a origem cortical.`);
+    why.push('A referência clássica é um pico positivo cerca de 20 ms antes do EMG para músculo distal da mão; latências maiores são esperadas em músculos proximais e membro inferior — uma ampla variedade de relações temporais e topografias é descrita (Barrett 1992).');
+    if (isFinite(bd)) why.push(`Duração do burst EMG de ${fmt(bd,0)} ms ${bd<50?'é compatível com':'não reforça'} a origem cortical — o corte de 50 ms não é específico.`);
   } else {
     cls='neg';
     verdict='Transiente presente, porém com latência ou morfologia fora do padrão cortical clássico.';
     why.push(`Pico positivo a ${fmt(P.pos.t,0)} ms e negativo a ${fmt(P.neg.t,0)} ms.`);
-    why.push('Reveja a janela de busca, a escolha do canal e a precisão do onset do EMG antes de concluir.');
+    why.push('Reveja a janela de busca, a escolha do canal e a precisão do onset do EMG antes de concluir — Barrett 1992 descreve ampla variedade de relações temporais fora do padrão de 20 ms.');
   }
+  if (ERD && ERD.sigPre) why.push(cortical&&hasSig
+    ? 'Atenção: há também ERD beta pré-abalo significativa — achado discordante; reveja a possibilidade de imitação/sobreposição funcional.'
+    : 'ERD beta/gama pré-abalo significativa — favorece origem funcional (Meppelink 2016; Beudel 2018).');
   if (!STATS) why.push('A análise de significância ainda não foi executada — sem ela, a leitura permanece descritiva.');
-  if (EP.N<20) why.push(`Apenas ${EP.N} épocas: abaixo do mínimo prático. O alvo é 40–50 abalos.`);
+  if (EP.N<20) why.push(`Apenas ${EP.N} épocas: abaixo do mínimo prático. O alvo é 40–50 abalos; a literatura emprega de 50 a 200.`);
   if (isFinite(EP.jitter) && EP.jitter>5) why.push(`Jitter de alinhamento de ${fmt(EP.jitter,1)} ms: alto o bastante para borrar uma espícula cortical, cuja duração é da ordem de 10–20 ms. Reveja o canal âncora e o limiar antes de concluir por ausência de transiente.`);
-  return {verdict, cls, why, cortical, bpLike, hasSig};
+  if (chk){
+    if (chk.inversion===false) why.push('Salvaguarda: o transiente não inverte polaridade através do escalpo — desconfie de artefato (ver painel Topografia).');
+    if (isFinite(chk.ampCorr) && Math.abs(chk.ampCorr)>=0.5) why.push(`Salvaguarda: amplitude do transiente correlaciona-se com a do burst (r=${fmt(chk.ampCorr,2)}) — considere contaminação miogênica.`);
+  }
+  return {verdict, cls, why, cortical, bpLike, hasSig, bpq, cvDur, bd, chk};
+}
+
+/* Matriz de achados por hipótese (Zutt 2015/2018; Latorre 2025):
+   apresentar cada marcador como presente/ausente/não avaliado, com o peso
+   que a literatura lhe atribui — em vez de um veredito único. */
+function findingsMatrix(c){
+  if (!c) return '';
+  const S={p:'<span class="tag ok">presente</span>', a:'<span class="tag no">ausente</span>', na:'<span class="tag">não avaliado</span>'};
+  const rows=[];
+  rows.push(['Espícula EEG time-locked (JLBA)', STATS?(c.hasSig&&c.cortical?'p':'a'):'na', 'definitivo para origem cortical']);
+  rows.push(['Duração do burst &lt; 50 ms', isFinite(c.bd)?(c.bd<50?'p':'a'):'na', 'sugestivo de cortical, não específico']);
+  rows.push(['Inversão de polaridade no escalpo', c.chk&&c.chk.inversion!==null?(c.chk.inversion?'p':'a'):'na', 'salvaguarda contra artefato']);
+  rows.push(['BP clássico (negatividade ≥ 5 µV)', c.bpq&&!c.bpq.na?(c.bpq.classic?'p':'a'):'na', 'favorece origem funcional']);
+  rows.push(['BP quantificado (inclinação, p&lt;0,05)', c.bpq&&!c.bpq.na?(c.bpq.significant?'p':'a'):'na', 'favorece origem funcional']);
+  rows.push(['ERD beta/gama pré-abalo', ERD?(ERD.sigPre?'p':'a'):'na', 'favorece origem funcional (sens. ~65%)']);
+  rows.push(['Duração de burst variável (CV &gt; 40%)', isFinite(c.cvDur)?(c.cvDur>0.4?'p':'a'):'na', 'favorece origem funcional']);
+  if (isSPLA()) rows.push(['Mioclonia positiva precedendo o silêncio', SIL?(SIL.nPosPre>0?'p':'a'):'na', 'sustenta origem cortical da mioclonia negativa']);
+  rows.push(['SEP gigante', 'na', 'definitivo — módulo ainda não coberto']);
+  rows.push(['Reflexo C / LLR patológica', 'na', 'definitivo — módulo ainda não coberto']);
+  rows.push(['Coerência córtico-muscular', 'na', 'definitivo — módulo ainda não coberto']);
+  return `<table style="margin-top:10px"><thead><tr><th>Achado</th><th style="width:120px">Estado</th><th>Peso</th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td>${r[0]}</td><td>${S[r[1]]}</td><td class="note">${r[2]}</td></tr>`).join('')}
+  </tbody></table>
+  <div class="note" style="margin-top:8px"><b>Ausência não exclui:</b> o JLBA negativo pode decorrer de limitação
+  intrínseca da EEG (a MEG é mais eficaz em isolar o transiente pré-mioclônico — Mima 1998), de artefato, de baixa
+  frequência dos abalos ou de abalos de alta frequência e amplitude (Latorre 2023). SEP gigante, reflexo C e
+  coerência córtico-muscular completam os achados definitivos e devem ser buscados em exame dedicado.</div>`;
 }
 
 function renderVerdict(){
   const c=classify();
   const html = !c ? '<div class="note">Aguardando a média.</div>'
     : `<div class="verdict ${c.cls}"><b>${c.verdict}</b><br>${c.why.join(' ')}</div>`;
-  $('#repVerdict').innerHTML=html;
+  $('#repVerdict').innerHTML = html + (c?findingsMatrix(c):'');
   $('#statVerdict').innerHTML=html;
 }
 
@@ -1949,6 +2902,7 @@ function renderReport(){
     ['Pico positivo', `${fmt(P.pos.v,2)} µV a ${fmt(P.pos.t,1)} ms`],
     ['Pico negativo', `${fmt(P.neg.v,2)} µV a ${fmt(P.neg.t,1)} ms`],
     ['Duração do burst EMG', `${fmt(bd,0)} ms`],
+    ['CV da duração entre épocas', `${fmt(100*burstDurationCV(),0)} %`],
     ['Referência de t = 0', $('#t0mode').value==='emg'
         ? `início do EMG médio a ${$('#zeroFrac').value}% do pico (deslocamento ${fmt(EP.zeroShiftMs,1)} ms)`
         : 'marcador do detector'],
@@ -1968,11 +2922,29 @@ function renderReport(){
     ['Amostragem', DATA.fs+' Hz'],
     ['Arquivo', DATA.filename||'—']
   ];
+  const bpq=quantifyBP();
+  if (bpq){
+    rows.push(['BP clássico (≥ 5 µV)', bpq.na ? `não avaliado — ${bpq.why}` : (bpq.classic?'presente':'ausente')+` (negatividade máxima ${fmt(bpq.amp,1)} µV)`]);
+    if (!bpq.na){
+      rows.push(['BP quantificado', `inclinação ${fmt(bpq.slope,2)} µV/s em ${fmt(bpq.wA,0)} a ${fmt(bpq.wB,0)} ms · t=${fmt(bpq.t,2)} (gl ${bpq.df}) · p=${bpq.p<0.001?'<0,001':fmt(bpq.p,3)} → ${bpq.significant?'significativo':'não significativo'}`]);
+      rows.push(['Inflexão BP precoce/tardio', bpq.bp2!==null ? `${fmt(bpq.bp2,0)} ms (referência ~−400 ms)` : 'não identificada']);
+    }
+  }
+  if (isSPLA() && SIL){
+    rows.push(['SPLA — períodos silentes', `${MARKERS.length} eventos · gatilho no ${PARAMS.detect.ref==='end'?'fim':'início'} do silêncio`]);
+    rows.push(['Mioclonia positiva precedente', `${SIL.nPosPre} evento(s)`]);
+  }
   if (STATS){
     rows.push(['Bootstrap', `${STATS.nB} reamostragens`]);
     rows.push(['Surrogatos', `${STATS.nS}, envelope ${(100*(1-STATS.alpha)).toFixed(0)}%`]);
     rows.push(['Trechos significativos', STATS.clusters.length
       ? STATS.clusters.map(c=>`${fmt(c.a,0)}–${fmt(c.b,0)} ms (pico ${fmt(c.peak,0)} ms, ${fmt(c.amp,2)} µV)`).join('; ')
+      : 'nenhum']);
+  }
+  if (ERD){
+    rows.push(['ERD 13–45 Hz', `${ERD.N} épocas de ±${ERD.halfS} s · base ${ERD.blA} a ${ERD.blB} s · ${ERD.nPerm} permutações`]);
+    rows.push(['Clusters tempo-frequência', ERD.clusters.length
+      ? ERD.clusters.map(c=>`${c.meanLR<0?'ERD':'ERS'} ${fmt(c.fA,0)}–${fmt(c.fB,0)} Hz, ${fmt(c.tA/1000,1)} a ${fmt(c.tB/1000,1)} s (p=${fmt(c.p,3)})`).join('; ')
       : 'nenhum']);
   }
   if (SPLIT) rows.push(['Correlação entre metades', SPLIT.r.toFixed(3)]);
@@ -2032,22 +3004,53 @@ function svgAverage(){
 <rect width="${W}" height="${H}" fill="#FFFFFF"/>
 <rect x="${pad.l}" y="${pad.t}" width="${W-pad.l-pad.r}" height="${H-pad.t-pad.b}" fill="none" stroke="#C8CFCA"/>
 ${g}
-<text x="${(pad.l+W-pad.r)/2}" y="${H-8}" font-size="11" text-anchor="middle" fill="#161C24" font-family="sans-serif">ms em relação ao início do EMG · ${DATA.labels[ana]} · n = ${EP.N}</text>
+<text x="${(pad.l+W-pad.r)/2}" y="${H-8}" font-size="11" text-anchor="middle" fill="#161C24" font-family="sans-serif">${zeroLabel()} · ${DATA.labels[ana]} · n = ${EP.N}</text>
 </svg>`;
 }
 function sessionJSON(){
   return JSON.stringify({
-    app:'JLBA v0.1', exported:new Date().toISOString(),
+    app:'JLBA v0.2', exported:new Date().toISOString(),
     file:DATA.filename, fs:DATA.fs, n:DATA.n,
     channels:DATA.labels.map((l,i)=>({label:l,type:DATA.types[i],unit:DATA.units[i]})),
     params:PARAMS,
     markers_samples:MARKERS.map(m=>+m.toFixed(3)),
     markers_seconds:MARKERS.map(m=>+(m/DATA.fs).toFixed(4)),
+    silence: SIL?{ onsets_s:SIL.onsets.map(m=>+(m/DATA.fs).toFixed(4)), ends_s:SIL.ends.map(m=>+(m/DATA.fs).toFixed(4)), positive_pre:SIL.nPosPre }:null,
     epochs:{ accepted:EP?EP.N:0, rejected:EP?EP.rejected:[] },
     peaks:EP?EP.peaks:null,
+    bp: EP?quantifyBP():null,
+    burst_cv: (EP && isFinite(burstDurationCV())) ? +burstDurationCV().toFixed(3) : null,
     stats: STATS?{nB:STATS.nB,nS:STATS.nS,alpha:STATS.alpha,minDur:STATS.minDur,clusters:STATS.clusters}:null,
+    erd: ERD?{ nEpochs:ERD.N, halfS:ERD.halfS, baseline:[ERD.blA,ERD.blB], nPerm:ERD.nPerm,
+               channel:DATA.labels[ERD.ch], sigPre:ERD.sigPre, clusters:ERD.clusters }:null,
     split: SPLIT?{r:SPLIT.r,nA:SPLIT.nA,nB:SPLIT.nB}:null
   }, null, 2);
+}
+
+/* Texto de métodos pronto para manuscrito, gerado dos parâmetros efetivamente
+   usados — resposta à crítica de subespecificação do JLBA (Latorre 2023). */
+function methodsText(){
+  const f=PARAMS.filters||{}, d=PARAMS.detect||{}, e=PARAMS.epoch||{};
+  const p=[];
+  p.push(`Registros de EEG-poliEMG (${DATA.labels.filter((_,i)=>DATA.types[i]==='EEG').length} canais de EEG e ${DATA.labels.filter((_,i)=>DATA.types[i]==='EMG').length} de EMG, ${DATA.fs} Hz de amostragem) foram analisados por back-averaging travado no abalo (jerk-locked back-averaging) em aplicação dedicada (JLBA v0.2), com processamento integral no navegador.`);
+  if (f.eegHP!==undefined){
+    p.push(`Os sinais de EEG foram filtrados de ${f.eegHP} a ${f.eegLP} Hz e os de EMG de ${f.emgHP} a ${f.emgLP} Hz (Butterworth de ordem ${f.eegOrd} e ${f.emgOrd}, respectivamente, em aplicação bidirecional de fase zero)${f.notch?`, com filtro notch de ${f.notch} Hz até o ${f.harm}º harmônico`:''}${f.detrend?', após remoção de tendência linear por canal':''}. Referência do EEG: ${f.reref==='avg'?'média comum':f.reref==='ch'?'eletrodo único':f.reref==='lap'?'Laplaciano de Hjorth':'a original do registro'}.`);
+  }
+  if (d.algo==='bacav') p.push(`O início de cada abalo foi marcado no canal de ${PARAMS.anchor} por limiar com validação de contexto: amplitude normalizada do envelope acima de ${d.thr}, com janela prévia de ${d.tb} s abaixo de ${d.ab} e janela posterior de ${d.ta} s acima de ${d.aa}; período refratário de ${d.bd} s.`);
+  else if (d.algo==='sd') p.push(`O início de cada abalo foi marcado no canal de ${PARAMS.anchor} pelo critério de linha de base + ${d.k} desvios-padrão robustos (mediana e IQR/1,349; média móvel de ${d.win} ms; duração mínima acima do limiar de ${d.min} ms; período refratário de ${d.bd} s), conforme Hodges e Bui (1996).`);
+  else if (d.algo==='tkeo') p.push(`O início de cada abalo foi marcado no canal de ${PARAMS.anchor} pelo operador de energia de Teager–Kaiser com limiar adaptativo (k=${d.k}; suavização de ${d.win} ms; período refratário de ${d.bd} s).`);
+  else if (d.algo==='spla') p.push(`Foi realizada promediação travada no período silente (silent period locked averaging; Ugawa et al., 1989): durante contração tônica mantida de ${PARAMS.anchor}, períodos silentes foram definidos como queda do envelope abaixo de ${Math.round(d.frac*100)}% do nível tônico mediano, com duração entre ${d.minMs} e ${d.maxMs} ms e atividade tônica sustentada nos ${d.tonMs} ms precedentes; o gatilho foi o ${d.ref==='end'?'fim':'início'} do silêncio.`);
+  else if (d.algo) p.push(`Os eventos foram marcados manualmente no traçado por inspeção visual.`);
+  if (d.leadCompMs) p.push(`A latência introduzida pelo envelope de detecção foi compensada deterministicamente (${d.leadCompMs} ms).`);
+  if (d.xcorr) p.push(`Os marcadores foram realinhados por correlação cruzada do EMG retificado contra o modelo médio.`);
+  if (e.pre!==undefined){
+    p.push(`Épocas de −${e.pre} a +${e.post} ms foram corrigidas pela linha de base de ${e.blA} a ${e.blB} ms (${e.blMode==='mean'?'subtração da média':e.blMode==='lin'?'regressão linear':'sem correção'}) e rejeitadas quando a amplitude pico-a-pico do EEG excedeu ${e.ppRej} µV ou houve atividade EMG na linha de base${EP?`; ${EP.N} épocas foram aceitas de ${MARKERS.length} eventos marcados`:''}. O estimador foi a ${e.estimator==='mean'?'média aritmética':e.estimator==='median'?'mediana':'média aparada em 20%'}.`);
+    p.push(`O instante zero foi referenciado ao ${$('#t0mode').value==='emg'?'início do EMG retificado médio (critério de '+$('#zeroFrac').value+'% do pico), eliminando a dependência do limiar de detecção':'marcador do detector'}.`);
+  }
+  if (STATS) p.push(`A significância do transiente foi avaliada por bootstrap das épocas (${STATS.nB} reamostragens) e por distribuição nula construída com ${STATS.nS} promediações de gatilhos aleatórios (envelope de ${(100*(1-STATS.alpha)).toFixed(0)}%, duração mínima de ${STATS.minDur} ms).`);
+  if (SPLIT) p.push(`A consistência foi verificada por divisão da amostra em metades (r=${SPLIT.r.toFixed(2)} entre as metades).`);
+  if (ERD) p.push(`A dessincronização relacionada ao evento foi quantificada por transformada de Morlet (7 ciclos) entre 13 e 45 Hz em épocas de ±${ERD.halfS} s, normalizadas por logRatio contra a linha de base de ${ERD.blA} a ${ERD.blB} s, e testada por teste t de uma amostra com correção por permutação no nível de cluster (${ERD.nPerm} permutações, p<0,05), conforme Meppelink et al. (2016).`);
+  return p.join(' ')+'\n';
 }
 function reportHTML(){
   const c=classify();
@@ -2058,13 +3061,19 @@ table{border-collapse:collapse;width:100%;font-size:12.5px;margin:14px 0}
 th,td{border-bottom:1px solid #C8CFCA;padding:5px 8px;text-align:left}
 th{width:34%;color:#5A6672;font-weight:600}
 .v{border-left:3px solid #B3121D;background:#F1F3F1;padding:10px 13px;margin:14px 0}
+.tag{font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:1px 5px;border:1px solid #C8CFCA;border-radius:2px;color:#5A6672}
+.tag.ok{color:#1F6F43;border-color:#1F6F43}.tag.no{color:#B3121D;border-color:#B3121D}
+.note{font-size:11.5px;color:#5A6672}
+h2{font-size:13px;letter-spacing:.1em;text-transform:uppercase;margin-top:26px}
 small{color:#5A6672}</style>
 <h1>Back-averaging travado no abalo</h1>
-<p><small>Gerado em ${new Date().toLocaleString('pt-BR')} · JLBA v0.1 · uso em pesquisa, não substitui julgamento clínico.</small></p>
+<p><small>Gerado em ${new Date().toLocaleString('pt-BR')} · JLBA v0.2 · uso em pesquisa, não substitui julgamento clínico.</small></p>
 ${svgAverage()}
 ${$('#repTab').innerHTML}
 ${c?`<div class="v"><b>${c.verdict}</b><br>${c.why.join(' ')}</div>`:''}
-${$('#musTab').innerHTML}`;
+${c?`<h2>Matriz de achados</h2>${findingsMatrix(c)}`:''}
+${$('#musTab').innerHTML}
+<h2>Métodos</h2><p>${methodsText()}</p>`;
 }
 
 /* ==========================================================================
@@ -2077,8 +3086,9 @@ function showTab(name){
   ['dados','pre','det','avg','val','rep'].forEach(t=>$('#tab-'+t).classList.toggle('hidden', t!==name));
   if (name==='pre') VIEW.mount('#viewerHostPre');
   if (name==='det') VIEW.mount('#viewerHostDet');
-  if (name==='avg' && EP){ drawAverage(); drawRaster(); }
-  if (name==='val'){ drawSplit(); drawStat(); }
+  if (name==='avg' && EP){ drawAverage(); drawRaster(); drawConv(); }
+  if (name==='val'){ drawSplit(); drawStat(); drawERD(); }
+  if (name==='rep'){ drawTopo(); }
 }
 
 $('#tabs').addEventListener('click', e=>{
@@ -2088,7 +3098,7 @@ $('#btnTheme').onclick = ()=>{
   const bench = document.body.dataset.theme==='bench';
   document.body.dataset.theme = bench?'paper':'bench';
   $('#btnTheme').textContent = bench?'Modo bancada':'Modo papel';
-  VIEW.draw(); if(EP){drawAverage();drawRaster();} drawSplit(); drawStat();
+  VIEW.draw(); if(EP){drawAverage();drawRaster();drawConv();drawTopo();} drawSplit(); drawStat(); drawERD();
 };
 
 $('#fileIn').onchange = async e=>{
@@ -2115,7 +3125,7 @@ $('#btnSyn').onclick = ()=>{
   Object.assign(DATA,{ loaded:true, fs:s.fs, n:s.n, labels:s.labels, types:s.types, units:s.units,
     raw:s.ch, proc:s.ch.map(c=>Float32Array.from(c)), rect:[], env:[], filtered:false, filename:s.filename });
   DATA.truth=s.truth;
-  MARKERS=[]; EP=null; STATS=null; SPLIT=null;
+  MARKERS=[]; SIL=null; EP=null; STATS=null; SPLIT=null; splitRuns=0; ERD=null;
   $('#panMap').classList.add('hidden');
   onDataReady();
   $('#filtMsg').textContent += `  Verdade-terreno: ${s.truth.times.length} abalos, modo “${s.truth.mode}”.`;
@@ -2123,12 +3133,19 @@ $('#btnSyn').onclick = ()=>{
 
 $('#btnAccept').onclick = acceptMapping;
 $('#reref').onchange = e=>$('#rerefChWrap').classList.toggle('hidden', e.target.value!=='ch');
-$('#btnFilter').onclick = ()=>{ applyFilters(); EP=null; STATS=null; };
+$('#btnFilter').onclick = ()=>{ applyFilters(); EP=null; STATS=null; SPLIT=null; splitRuns=0; ERD=null; };
 $$('[data-preset]').forEach(b=>b.onclick=()=>{
   const p=b.dataset.preset;
   if (p==='mio'){ $('#eegHP').value=1; $('#eegLP').value=70; }
   if (p==='bp'){ $('#eegHP').value=0.01; $('#eegLP').value=50; $('#epPre').value=2500; $('#epPost').value=500;
     $('#blA').value=-2500; $('#blB').value=-2000; $('#pkA').value=-2000; $('#pkB').value=50; }
+  if (p==='cljlba'){ $('#eegHP').value=0.05; $('#eegLP').value=50; }
+  if (p==='mepp'){
+    const nyq=Math.floor(DATA.fs/2*0.9);
+    $('#eegHP').value=0.05; $('#eegLP').value=Math.min(350, nyq);
+    $('#emgHP').value=25;   $('#emgLP').value=Math.min(1250, nyq);
+    if (nyq<350) $('#filtMsg').textContent=`Banda de Meppelink limitada pela amostragem de ${DATA.fs} Hz (passa-baixas em ${Math.min(350,nyq)} Hz).`;
+  }
   if (p==='emg2'){ $('#emgHP').value=20; $('#emgLP').value=300; }
   applyFilters();
 });
@@ -2136,9 +3153,10 @@ $('#algo').onchange = e=>{
   $('#parBacav').classList.toggle('hidden', e.target.value!=='bacav');
   $('#parSD').classList.toggle('hidden', e.target.value!=='sd');
   $('#parTK').classList.toggle('hidden', e.target.value!=='tkeo');
+  $('#parSPLA').classList.toggle('hidden', e.target.value!=='spla');
 };
 $('#btnDetect').onclick = runDetect;
-$('#btnClearMk').onclick = ()=>{ MARKERS=[]; EP=null; STATS=null; updateChips(); VIEW.draw(); $('#detMsg').textContent='Marcadores removidos.'; };
+$('#btnClearMk').onclick = ()=>{ MARKERS=[]; SIL=null; EP=null; STATS=null; SPLIT=null; splitRuns=0; ERD=null; updateChips(); VIEW.draw(); $('#detMsg').textContent='Marcadores removidos.'; };
 $$('[data-ep]').forEach(b=>b.onclick=()=>{
   const p=b.dataset.ep;
   if (p==='focal'){ $('#epPre').value=200; $('#epPost').value=100; $('#blA').value=-200; $('#blB').value=-120; $('#pkA').value=-100; $('#pkB').value=20; }
@@ -2152,12 +3170,13 @@ $('#btnAvg').onclick = computeAverage;
 });
 ['#envMode','#envWin'].forEach(sel=>$(sel).addEventListener('change', syncLead));
 $('#autoLead').onchange = syncLead;
-$('#anaCh').onchange = ()=>{ if(EP){ STATS=null; SPLIT=null; drawAverage(); drawRaster(); computePeaks(); drawSplit(); drawStat(); } };
+$('#anaCh').onchange = ()=>{ ERD=null; drawERD(); $('#erdVerdict').innerHTML=''; if(EP){ STATS=null; SPLIT=null; drawAverage(); drawRaster(); computePeaks(); drawSplit(); drawStat(); } };
 ['#showSEM','#showBfly','#negUp'].forEach(s=>$(s).onchange=()=>{ drawAverage(); drawSplit(); drawStat(); });
 $('#avgGain').oninput=()=>drawAverage();
 $('#btnSplit').onclick = ()=>doSplit(true);
 $('#btnOddEven').onclick = ()=>doSplit(false);
 $('#btnStats').onclick = runStats;
+$('#btnERD').onclick = runERD;
 $('#btnPeaks').onclick = computePeaks;
 $('#expCsvAvg').onclick = ()=>EP&&download('jlba_medias.csv', csvAverages(),'text/csv');
 $('#expCsvEp').onclick = ()=>EP&&download('jlba_epocas.csv', csvEpochs(),'text/csv');
@@ -2165,7 +3184,8 @@ $('#expSvg').onclick = ()=>EP&&download('jlba_backaverage.svg', svgAverage(),'im
 $('#expPng').onclick = ()=>{ if(!EP) return; $('#cvAvg').toBlob(b=>download('jlba_backaverage.png', b)); };
 $('#expJson').onclick = ()=>download('jlba_sessao.json', sessionJSON(),'application/json');
 $('#expHtml').onclick = ()=>EP&&download('jlba_relatorio.html', reportHTML(),'text/html');
-window.addEventListener('resize', ()=>{ if(EP){drawAverage();drawRaster();} drawSplit(); drawStat(); });
+$('#expMet').onclick = ()=>download('jlba_metodos.txt', methodsText(),'text/plain');
+window.addEventListener('resize', ()=>{ if(EP){drawAverage();drawRaster();drawConv();drawTopo();} drawSplit(); drawStat(); drawERD(); });
 
 /* ==========================================================================
    12 · AUTOTESTE NUMÉRICO
@@ -2206,6 +3226,22 @@ window.addEventListener('resize', ()=>{ if(EP){drawAverage();drawRaster();} draw
   const dc=DSP.detrend(Float32Array.from({length:200},(_,i)=>3+0.5*i));
   let mxd=0; for(const v of dc) mxd=Math.max(mxd,Math.abs(v));
   chk('detrend remove rampa linear', mxd<1e-3, `resíduo ${mxd.toExponential(1)}`);
+
+  // 5 · FFT localiza a frequência
+  const NT=1024, fre=new Float64Array(NT), fim=new Float64Array(NT);
+  for (let i=0;i<NT;i++) fre[i]=Math.sin(2*Math.PI*64*i/NT);
+  DSP.fft(fre,fim);
+  let pb=0,pm=0;
+  for (let k=1;k<NT/2;k++){ const mg=fre[k]*fre[k]+fim[k]*fim[k]; if (mg>pm){pm=mg;pb=k;} }
+  chk('FFT localiza seno no bin correto', pb===64, `bin ${pb}`);
+
+  // 6 · ifft(fft(x)) = x
+  const xr=new Float64Array(NT), xi=new Float64Array(NT);
+  for (let i=0;i<NT;i++) xr[i]=Math.sin(2*Math.PI*7*i/NT)+0.3*Math.cos(2*Math.PI*31*i/NT);
+  const orx=Float64Array.from(xr);
+  DSP.fft(xr,xi); DSP.ifft(xr,xi);
+  let mxe=0; for (let i=0;i<NT;i++) mxe=Math.max(mxe,Math.abs(xr[i]-orx[i]));
+  chk('ifft inverte fft', mxe<1e-9, `erro máx ${mxe.toExponential(1)}`);
 
   console.log(`  ${pass} verificações passaram, ${fail} falharam.`);
   console.log('%c  Validação completa contra verdade-terreno: carregue um registro sintético '+
