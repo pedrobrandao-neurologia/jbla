@@ -4,6 +4,8 @@ Aplicação para **back-averaging travado no abalo mioclônico** (jerk-locked ba
 
 Todo o programa é um único arquivo — `index.html` — que roda inteiramente no navegador, **offline e sem dependências externas**. Nenhum dado sai da sua máquina: o sinal nunca é enviado a servidor algum.
 
+A interface está disponível em **cinco idiomas** — português (padrão), **English, français, italiano e Deutsch** — selecionáveis no cabeçalho (PT/EN/FR/IT/DE). A tradução cobre toda a interface, as mensagens dinâmicas, o laudo com a matriz de achados, o relatório em HTML e o **texto de métodos para manuscrito** (útil para submissão em inglês). A preferência de idioma fica salva no navegador; trocar o idioma re-renderiza os resultados já calculados.
+
 > **Uso em pesquisa.** Ferramenta de apoio à análise. Não substitui o julgamento clínico e não constitui dispositivo médico certificado.
 
 ---
