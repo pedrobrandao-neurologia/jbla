@@ -47,7 +47,8 @@ O programa é organizado como um pipeline sequencial. Cada aba corresponde a uma
 
 **Carregar um registro próprio** — formatos aceitos:
 
-- **TXT/CSV/TSV**: uma coluna por canal; separador espaço, tabulação, vírgula ou ponto-e-vírgula (a detecção do separador tolera decimais com vírgula); cabeçalho opcional (se houver, os rótulos são usados para adivinhar o tipo de cada canal). O formato de exportação do **BacAv** (separado por espaço, sem cabeçalho, 1ª coluna = tempo em segundos) é lido diretamente.
+- **TXT/CSV/TSV**: uma coluna por canal; separador espaço, tabulação, vírgula ou ponto-e-vírgula (a detecção do separador tolera decimais com vírgula, que são convertidos com aviso); cabeçalho opcional (se houver, os rótulos são usados para adivinhar o tipo de cada canal). Terminação CRLF ou LF, espaços múltiplos e linha final vazia são tolerados; linhas com contagem de colunas inconsistente ou valores não numéricos geram erro apontando a linha e a coluna.
+- **Formato BacAv** (Vial et al., *Clin Neurophysiol Pract* 2020 — plataforma do NIH): separado por espaço, sem cabeçalho, 1ª coluna = tempo em segundos. É **detectado automaticamente**: a taxa de amostragem é inferida como 1/mediana(diff(tempo)) em dupla precisão, com validação de regularidade do passo (< 1% de jitter; se houver lacunas, o programa avisa e oferece continuar assumindo a mediana), e os tipos EEG/EMG de cada coluna são **sugeridos por análise espectral** (fração de potência < 5 Hz alta → EEG; potência 20–300 Hz alta ou curtose alta por bursts fásicos → EMG). A sugestão preenche os seletores do mapeamento, mas o usuário sempre pode remapear — a numeração exibida inclui a coluna de tempo como coluna 1. Arquivos grandes (o dataset público `mmc1.txt` tem ~23 MB e 304.011 linhas) são lidos **em partes, com barra de progresso e sem travar a interface**, direto para `Float32Array` por canal.
 - **EDF/EDF+ e BDF (BioSemi, 24 bits)**: cabeçalho lido integralmente (rótulos, unidades, ganhos de calibração); canais de anotação são descartados. Canais com taxas de amostragem diferentes são reamostrados por interpolação linear para a taxa mais alta do arquivo.
 
 Depois de carregar, confira a **tabela de mapeamento**: cada coluna precisa de um tipo — `EEG`, `EMG`, `ACC` (acelerômetro), `TRIG`, `TIME` (coluna de tempo) ou `ignorar`. O programa tenta adivinhar pelos rótulos, mas a atribuição correta de EEG/EMG é sua responsabilidade e determina que filtro cada canal recebe. Se houver coluna de tempo, a taxa de amostragem é recalculada a partir dela.
@@ -147,6 +148,17 @@ A validação estatística é parte obrigatória do método, não um extra:
 **Mioclonia negativa / asterixis (SPLA):** com o paciente em contração tônica mantida, escolha o algoritmo *SPLA* na detecção, gatilho no **início** do silêncio para buscar o correlato cortical (e no **fim** para estudar o movimento visível). O sintético "mioclonia negativa" permite validar os parâmetros antes do dado real.
 
 ---
+
+## Suíte de teste manual — importação BacAv (dataset `mmc1.txt` de Vial et al. 2020)
+
+1. **Parse**: carregar o `mmc1.txt` (suplemento do artigo, PMC7033354). A interface não deve congelar; o mapeamento deve reportar 304.011 amostras, fs = 1000 Hz (inferida), duração 304,0 s e "formato BacAv detectado".
+2. **Classificação**: os seletores devem sugerir coluna 1 = TIME, colunas 2–3 = EEG, colunas 4–9 = EMG (numeração contando o tempo como coluna 1).
+3. **Detecção**: com o preset de filtro BP aplicado, retificação → média móvel de 50 ms → limiar 6× a mediana do envelope → refratário de 3 s no canal da coluna 5 deve gerar ≈ 49 triggers (aceitável 45–55).
+4. **Back-averaging**: janela −2,5 a +1,0 s, linha de base nos 0,5 s iniciais: as médias das colunas 2 e 3 devem exibir rampa lenta iniciando ~1–1,2 s antes do onset com pico próximo de t = 0 (Bereitschaftspotential, Fig. 4 de Vial et al. 2020). Atenção: neste dataset a rampa tem **polaridade positiva** — convenção invertida, que o BP quantificado sinaliza com a ressalva apropriada.
+5. **Robustez**: arquivo pequeno com CRLF, espaços duplos e linha final vazia deve ser aceito; colunas inconsistentes ou valores não numéricos geram erro claro com número da linha; decimais com vírgula são convertidos com aviso.
+6. **Recarga**: carregar o `mmc1.txt` duas vezes seguidas deve substituir o dataset sem crescimento perceptível de memória.
+
+(Esses seis passos estão automatizados na suíte de desenvolvimento com Playwright; os números acima foram validados contra o arquivo real.)
 
 ## Notas e limitações conhecidas
 
