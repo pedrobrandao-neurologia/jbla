@@ -451,6 +451,10 @@ canvas{display:block;width:100%;background:var(--field);border:1px solid var(--r
           <li>Posicione a <b>linha-guia tracejada</b> (que segue o cursor, com o tempo exato) sobre a <b>primeira deflexão
             do EMG que sai da linha de base silenciosa</b> — o início do burst, nunca o pico — e <b>clique</b>.
             Arrastar com o botão pressionado desloca o traçado sem marcar.</li>
+          <li><b>Corrigir a detecção automática:</b> aproxime o cursor de uma linha vermelha existente (ele vira ⇔),
+            <b>clique na linha e arraste-a</b> para a esquerda ou direita até o local correto; o tempo é mostrado durante
+            o arrasto e a posição é fixada ao soltar. Clicar na linha sem arrastar apenas a seleciona para o ajuste por teclado.
+            O ímã de onset não interfere no arrasto — a posição final é exatamente onde você soltar.</li>
           <li><b>Ajuste fino:</b> as teclas <b>← / →</b> movem o último marcador em 1 ms (com <b>Shift</b>, 10 ms).
             <b>Clique direito</b> (ou Alt+clique) remove o marcador mais próximo; <b>Desfazer último</b> remove o recém-colocado.</li>
           <li>Opcional: o <b>ímã de onset</b> ajusta cada clique ao início detectado do burst mais próximo (±50 ms) —
@@ -462,7 +466,7 @@ canvas{display:block;width:100%;background:var(--field);border:1px solid var(--r
     </div>
   </div>
 
-  <div class="panel"><h2>Traçado <span class="hint">Rolagem = zoom · arrastar = deslocar · na edição manual o clique marca exatamente na linha-guia, clique direito remove e ←/→ ajustam o último marcador.</span></h2>
+  <div class="panel"><h2>Traçado <span class="hint">Rolagem = zoom · arrastar = deslocar · na edição manual o clique marca na linha-guia, arrastar uma linha vermelha a reposiciona, clique direito remove e ←/→ ajustam o último marcador.</span></h2>
     <div class="body"><div id="viewerHostDet"></div></div></div>
 
   <div class="panel"><h2>Latências entre músculos <span class="hint">Em relação ao canal âncora, sobre a média retificada.</span></h2>
@@ -1448,9 +1452,27 @@ function applyFilters(){
    ========================================================================== */
 const VIEW = {
   cv:null, ctx:null, t0:0, dur:10, drag:null, host:null,
-  gutter:62, hoverX:null, lastMk:null, _raf:0,
+  gutter:62, hoverX:null, lastMk:null, mkDrag:null, _raf:0,
   userGain:false, pendingGains:null,
   scheduleDraw(){ if (this._raf) return; this._raf=requestAnimationFrame(()=>{ this._raf=0; this.draw(); }); },
+  /* posição do cursor → amostra (float); null na área dos rótulos */
+  pxToSample(clientX){
+    const r=this.cv.getBoundingClientRect();
+    const px=clientX-r.left;
+    if (px<this.gutter) return null;
+    return (this.t0+(px-this.gutter)/(r.width-this.gutter)*this.dur)*DATA.fs;
+  },
+  /* índice do marcador a até 8 px do cursor, ou −1 */
+  markerNear(clientX){
+    const r=this.cv.getBoundingClientRect();
+    const px=clientX-r.left;
+    if (px<this.gutter || !MARKERS.length) return -1;
+    const sPerPx=this.dur*DATA.fs/(r.width-this.gutter);
+    const s=this.t0*DATA.fs+(px-this.gutter)*sPerPx;
+    let bi=-1, bd=Infinity;
+    MARKERS.forEach((m,i)=>{ const d=Math.abs(m-s); if (d<bd){ bd=d; bi=i; } });
+    return (bi>=0 && bd<=8*sPerPx) ? bi : -1;
+  },
   /* ganhos sugeridos pela amplitude do registro; não sobrescreve ajuste manual */
   setGains(gE,gM){
     this.pendingGains=[gE,gM];
@@ -1492,15 +1514,36 @@ const VIEW = {
       this.t0 = Math.max(0, Math.min(DATA.n/DATA.fs-this.dur, tAt-frac*this.dur));
       this.draw();
     }, {passive:false});
-    /* No modo manual o arrastar continua deslocando o traçado; só o clique
-       sem arrasto (deslocamento < 4 px) adiciona/remove marcador. */
+    /* No modo manual: pegar uma linha de marcador (≤ 8 px) e arrastar a
+       reposiciona — inclusive as da detecção automática; arrastar fora de
+       marcador desloca o traçado; clique sem arrasto adiciona marcador. */
     this.cv.addEventListener('pointerdown', e=>{
       if (e.button!==0) return;                        // só botão esquerdo
+      if ($('#manualMode') && $('#manualMode').checked){
+        const mi=this.markerNear(e.clientX);
+        if (mi>=0){
+          this.mkDrag={idx:mi, moved:false};
+          this.cv.setPointerCapture(e.pointerId);
+          this.cv.style.cursor='ew-resize';
+          return;
+        }
+      }
       this.drag={x:e.clientX, t0:this.t0, moved:false};
       this.cv.setPointerCapture(e.pointerId);
     });
     this.cv.addEventListener('pointermove', e=>{
       const r=this.cv.getBoundingClientRect();
+      if (this.mkDrag){
+        const s=this.pxToSample(e.clientX);
+        if (s!==null){
+          this.mkDrag.moved=true;
+          MARKERS[this.mkDrag.idx]=Math.max(0,Math.min(DATA.n-1,s));
+          this.hoverX=null;
+          $('#detMsg').textContent=`Marcador: ${(MARKERS[this.mkDrag.idx]/DATA.fs).toFixed(4)} s — solte para fixar`;
+          this.scheduleDraw();
+        }
+        return;
+      }
       if (this.drag){
         if (Math.abs(e.clientX-this.drag.x)>3) this.drag.moved=true;
         if (this.drag.moved){
@@ -1512,10 +1555,30 @@ const VIEW = {
       }
       if ($('#manualMode') && $('#manualMode').checked){
         this.hoverX=e.clientX-r.left;
+        this.cv.style.cursor = this.markerNear(e.clientX)>=0 ? 'ew-resize' : 'crosshair';
         this.scheduleDraw();
+      } else {
+        this.cv.style.cursor='default';
       }
     });
     this.cv.addEventListener('pointerup', e=>{
+      if (this.mkDrag){
+        const moved=this.mkDrag.moved;
+        const v=MARKERS[this.mkDrag.idx];
+        this.mkDrag=null;
+        MARKERS.sort((a,b)=>a-b);
+        this.lastMk=v;
+        if (moved){
+          EP=null; STATS=null; SPLIT=null; ERD=null;
+          PARAMS.detect = PARAMS.detect || {algo:'manual'};
+          PARAMS.detect.manualEdits = (PARAMS.detect.manualEdits||0)+1;
+          $('#detMsg').textContent=`Marcador reposicionado para ${(v/DATA.fs).toFixed(4)} s · ←/→ ajustam em 1 ms (Shift: 10 ms)`;
+        } else {
+          $('#detMsg').textContent=`Marcador selecionado (${(v/DATA.fs).toFixed(4)} s) · arraste para mover · ←/→ ajustam em 1 ms`;
+        }
+        updateChips(); this.draw();
+        return;
+      }
       if (e.button!==0){ this.drag=null; return; }
       const hadDown=!!this.drag, wasDrag=this.drag && this.drag.moved;
       this.drag=null;
@@ -3502,7 +3565,7 @@ $('#btnUndoMk').onclick = ()=>{
 };
 $('#manualMode').onchange = e=>{
   $('#manualHelp').classList.toggle('hidden', !e.target.checked);
-  if (!e.target.checked) VIEW.hoverX=null;
+  if (!e.target.checked){ VIEW.hoverX=null; VIEW.mkDrag=null; if (VIEW.cv) VIEW.cv.style.cursor='default'; }
   VIEW.draw();
 };
 /* ajuste fino do último marcador: ←/→ = 1 ms; Shift = 10 ms */
