@@ -83,6 +83,8 @@ O visualizador de traçado permite zoom (rolagem do mouse), deslocamento (arrast
 
 Escolha o **canal âncora** (o EMG com os bursts mais nítidos) e o algoritmo:
 
+> **Precisão do onset:** por padrão, cada onset detectado é **refinado por regressão segmentada (bilinear)** — linha de base plana + rampa ajustadas ao envelope, com o ponto de quebra como onset — sem o viés tardio do cruzamento de limiar (Staude & Wolf). O botão **"Calibrar viés do detector"** gera sinal sintético com o ruído do próprio registro e bursts de onset conhecido, mede viés e desvio-padrão do erro do detector configurado, **subtrai o viés dos marcadores** e passa a reportar a latência EEG–EMG como **valor ± incerteza** ("18 ± 2 ms" em vez de "18 ms"). O envelope do detector pode ser o **TKEO** (Teager–Kaiser + RMS 10 ms em escala de amplitude), que reduz o erro de todos os métodos (Solnik 2010). No EMG, a interferência de rede é removida por **interpolação espectral** (o notch IIR introduz ringing que desloca o onset aparente).
+
 - **Limiar com validação de contexto (estilo BacAv)** — um ponto só vira marcador se cruzar o limiar **e** a janela anterior estiver silenciosa (linha de base < *Amplitude antes*) **e** a janela posterior confirmar burst substancial (> *Amplitude depois*). É o padrão recomendado.
 - **Linha de base + k·DP (Hodges–Bui)** — limiar estatístico sobre a mediana + k desvios robustos (IQR/1,349), com duração mínima acima do limiar.
 - **TKEO + limiar adaptativo** — operador de energia de Teager–Kaiser, sensível a bursts curtos.
@@ -102,8 +104,9 @@ A tabela de **latências entre músculos** (preenchida após a média) mostra in
 
 - **Janela de segmentação**: presets `−200/+100 ms` (mioclonia focal), `−500/+200 ms` (padrão) e `−2500/+500 ms` (BP).
 - **Correção de linha de base**: subtração da média ou detrend linear, numa janela pré-evento configurável (aplicada só ao EEG).
-- **Rejeição automática de épocas**: por amplitude pico-a-pico EEG (artefatos) e por atividade EMG na linha de base (abalos sobrepostos, que contaminariam o pré-evento).
-- **Estimador**: média aritmética, mediana ou média aparada 20% (as duas últimas são mais robustas a artefatos residuais).
+- **Rejeição automática de épocas**: por amplitude pico-a-pico EEG (artefatos), por atividade EMG do início da época até −200 ms (abalos sobrepostos que contaminam o pré-evento), por **gradiente** (µV/ms — saltos de eletrodo) e por **deriva** (diferença entre os primeiros e últimos 200 ms — a deriva lenta imita o BP; o preset de BP a ativa). Todos os motivos são registrados.
+- **Estimador**: média aritmética, mediana, média aparada 20% ou **média ponderada por ruído** (Hoke/Elberling, pesos ∝ 1/σ² por época — aproveita as épocas boas quando a qualidade varia).
+- **Correção de EOG por regressão** (canal mapeado como EOG): preferida à ICA para o BP, que a ICA pode remover; movimento ocular gera exatamente a mesma negatividade lenta frontocentral.
 - **Referência de t = 0**: por padrão, o zero é realinhado ao **início do EMG retificado médio** (critério de % do pico, configurável). Isso elimina a dependência do limiar do detector — o marcador bruto sempre cai alguns ms *depois* do início real do burst, e esse atraso muda com o limiar escolhido.
 
 O gráfico principal mostra o EEG médio (canal de análise em destaque, ±1 EPM opcional, modo *butterfly* opcional) e o EMG retificado médio, com t = 0 marcado. A convenção de polaridade **negativo para cima** pode ser ativada na legenda.
@@ -120,6 +123,9 @@ A validação estatística é parte obrigatória do método, não um extra:
 - **Bootstrap** (reamostragem das épocas): gera o intervalo de confiança da própria média.
 - **Surrogatos com gatilhos aleatórios**: repete todo o processo de promediação com marcadores posicionados ao acaso (mesmo n, mesmo espaçamento mínimo), construindo o **envelope nulo** — o que o acaso produziria. Trechos da média observada que saem do envelope por tempo suficiente (duração mínima configurável) são marcados como **significativos**.
 - **ERD 13–45 Hz**: decomposição tempo-frequência por Morlet (7 ciclos) em épocas de ±6 s, normalização em log contra a linha de base (−5 a −4 s) e **teste t de uma amostra com correção por permutação no nível de cluster**. O mapa tempo×frequência destaca os clusters significativos e a curva 31–45 Hz ± EPM acompanha o eixo temporal. A ERD pré-abalo favorece origem funcional com sensibilidade superior à do BP (Meppelink 2016; Beudel 2018); requer intervalos longos entre abalos — o programa avisa quando as épocas se sobrepõem.
+- **±average (média alternante)**: metade das épocas somada com sinal invertido → resta apenas o ruído residual, contra o qual o pico é comparado (critério objetivo: **pico ≥ 3× o RMS do ±average**). Também alimenta o cálculo *a priori* de quantos eventos são necessários (σ/√N) na curva de convergência.
+- **Split-half ×100**: distribuição da correlação entre metades em 100 divisões aleatórias (r mediano, P5, P95), correlacionada na janela de busca do pico.
+- **Coerência córtico-muscular e intermuscular**: Welch em segmentos disjuntos de 1 s (janela de Hann) com limite de confiança analítico 1−α^(1/(L−1)); coerência EEG×EMG **retificado e sem retificar** (relate ambos — não há consenso), coerência EMG×EMG (agonista–antagonista), **atraso estimado pela inclinação do espectro de fase** nos bins significativos (referências de Brown 1999: ~14 ms antebraço, ~25 ms mão, ~35 ms pé) e **densidade cumulante** com IC empírico. Não requer limiar de disparo e funciona em mioclonia de alta frequência, quando o JLBA falha — o programa recomenda o painel automaticamente quando a frequência de abalos excede ~3 Hz. Preenche a linha "Coerência córtico-muscular" da matriz de achados.
 
 ### 6 · Relatório
 
